@@ -10,7 +10,12 @@ const ACCEPTED_TYPES = [
   'image/x-icon'
 ]
 
-const defaultPalette = ['#0F172A', '#2563EB', '#F59E0B', '#10B981', '#EF4444', '#F8FAFC']
+const palettePresets = {
+  vivid: ['#0F172A', '#2563EB', '#F59E0B', '#10B981', '#EF4444', '#F8FAFC'],
+  pastel: ['#FDE68A', '#F9A8D4', '#BFDBFE', '#86EFAC', '#C4B5FD', '#FFFFFF'],
+  mono: ['#111827', '#374151', '#6B7280', '#D1D5DB', '#F3F4F6', '#FFFFFF'],
+  neon: ['#22D3EE', '#A78BFA', '#F472B6', '#FACC15', '#34D399', '#0F172A']
+}
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
@@ -76,7 +81,7 @@ function getClosestColor(hex, palette) {
 
 function buildPaletteFromImage(image, maxColors = 6) {
   const canvas = document.createElement('canvas')
-  const maxSize = 200
+  const maxSize = 180
   const scale = Math.min(1, maxSize / Math.max(image.width, image.height))
   const width = Math.max(1, Math.round(image.width * scale))
   const height = Math.max(1, Math.round(image.height * scale))
@@ -97,8 +102,8 @@ function buildPaletteFromImage(image, maxColors = 6) {
     const r = data[i]
     const g = data[i + 1]
     const b = data[i + 2]
-    const bucketKey = `${Math.round(r / 32) * 32},${Math.round(g / 32) * 32},${Math.round(b / 32) * 32}`
-    buckets.set(bucketKey, (buckets.get(bucketKey) || 0) + 1)
+    const key = `${Math.round(r / 32) * 32},${Math.round(g / 32) * 32},${Math.round(b / 32) * 32}`
+    buckets.set(key, (buckets.get(key) || 0) + 1)
   }
 
   const sortedKeys = [...buckets.entries()]
@@ -109,15 +114,15 @@ function buildPaletteFromImage(image, maxColors = 6) {
   for (const key of sortedKeys) {
     const [r, g, b] = key.split(',').map(Number)
     const candidate = rgbToHex(r, g, b)
+
     const alreadyClose = uniqueColors.some((existing) => {
       const current = hexToRgb(existing)
-      const target = { r, g, b }
       const distance = Math.sqrt(
-        (current.r - target.r) ** 2 +
-        (current.g - target.g) ** 2 +
-        (current.b - target.b) ** 2
+        (current.r - r) ** 2 +
+        (current.g - g) ** 2 +
+        (current.b - b) ** 2
       )
-      return distance < 35
+      return distance < 40
     })
 
     if (!alreadyClose) {
@@ -127,20 +132,16 @@ function buildPaletteFromImage(image, maxColors = 6) {
     if (uniqueColors.length >= maxColors) break
   }
 
-  if (uniqueColors.length === 0) {
-    return [...defaultPalette]
-  }
-
-  return uniqueColors
+  return uniqueColors.length ? uniqueColors : [...palettePresets.vivid]
 }
 
 function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
   return new Promise((resolve, reject) => {
     const image = new Image()
     image.onload = () => {
-      const cellSize = clamp(Number(options.cellSize) || 12, 6, 32)
-      const preserveTransparency = Boolean(options.preserveTransparency)
+      const cellSize = clamp(Number(options.cellSize) || 12, 6, 30)
       const backgroundColor = normalizeHex(options.backgroundColor || '#FFFFFF')
+      const preserveTransparency = Boolean(options.preserveTransparency)
       const maxWidth = 900
       const scale = Math.min(1, maxWidth / image.width)
       const width = Math.max(1, Math.round(image.width * scale))
@@ -152,9 +153,8 @@ function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
 
       const ctx = canvas.getContext('2d')
       ctx.drawImage(image, 0, 0, width, height)
-
       const imageData = ctx.getImageData(0, 0, width, height)
-      const rects = []
+      const blocks = []
 
       for (let y = 0; y < height; y += cellSize) {
         for (let x = 0; x < width; x += cellSize) {
@@ -174,10 +174,7 @@ function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
 
               const index = (py * width + px) * 4
               const alpha = imageData.data[index + 3]
-              if (alpha < 12) {
-                if (!preserveTransparency) continue
-                continue
-              }
+              if (alpha < 12) continue
 
               totalR += imageData.data[index]
               totalG += imageData.data[index + 1]
@@ -192,27 +189,21 @@ function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
           const avgR = Math.round(totalR / count)
           const avgG = Math.round(totalG / count)
           const avgB = Math.round(totalB / count)
-          const avgA = Math.round(totalA / count)
+          const avgAlpha = Math.round(totalA / count)
           const averageHex = rgbToHex(avgR, avgG, avgB)
           const nearest = getClosestColor(averageHex, palette)
+          const opacity = preserveTransparency ? clamp(avgAlpha / 255, 0.15, 1) : 1
 
-          const fillOpacity = preserveTransparency ? clamp(avgA / 255, 0.15, 1) : 1
-          const fillColor = preserveTransparency && avgA < 110 ? nearest : nearest
-
-          rects.push(
-            `<rect x="${x}" y="${y}" width="${cellSize + 1}" height="${cellSize + 1}" fill="${fillColor}" fill-opacity="${fillOpacity}" />`
+          blocks.push(
+            `<rect x="${x}" y="${y}" width="${cellSize + 1}" height="${cellSize + 1}" fill="${nearest}" fill-opacity="${opacity}" />`
           )
         }
       }
 
-      const backgroundMarkup = preserveTransparency
-        ? `<rect width="${width}" height="${height}" fill="${backgroundColor}" />`
-        : `<rect width="${width}" height="${height}" fill="${backgroundColor}" />`
-
       const svg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
-          ${backgroundMarkup}
-          ${rects.join('')}
+          <rect width="${width}" height="${height}" fill="${backgroundColor}" />
+          ${blocks.join('')}
         </svg>
       `.trim()
 
@@ -224,6 +215,45 @@ function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
   })
 }
 
+async function exportSvgToPng(svgString, filename) {
+  const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
+  const url = URL.createObjectURL(svgBlob)
+
+  try {
+    const img = new Image()
+    img.decoding = 'async'
+    const imageLoaded = new Promise((resolve, reject) => {
+      img.onload = resolve
+      img.onerror = reject
+      img.src = url
+    })
+
+    await imageLoaded
+
+    const canvas = document.createElement('canvas')
+    const width = img.naturalWidth || 1200
+    const height = img.naturalHeight || 1200
+    canvas.width = width
+    canvas.height = height
+
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#FFFFFF'
+    ctx.fillRect(0, 0, width, height)
+    ctx.drawImage(img, 0, 0, width, height)
+
+    const pngUrl = canvas.toDataURL('image/png')
+    const link = document.createElement('a')
+    link.href = pngUrl
+    link.download = `${filename || 'vectorized-image'}.png`
+    link.click()
+
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    URL.revokeObjectURL(url)
+    throw error
+  }
+}
+
 export default function App() {
   const inputRef = useRef(null)
   const [imageSrc, setImageSrc] = useState('')
@@ -232,14 +262,14 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [imageInfo, setImageInfo] = useState({ width: 0, height: 0 })
   const [detectedColors, setDetectedColors] = useState([])
-  const [paletteAccepted, setPaletteAccepted] = useState(false)
+  const [selectedPreset, setSelectedPreset] = useState('vivid')
   const [svgMarkup, setSvgMarkup] = useState('')
   const [backgroundColor, setBackgroundColor] = useState('#FFFFFF')
   const [gridSize, setGridSize] = useState(14)
   const [preserveTransparency, setPreserveTransparency] = useState(true)
 
   const fileStats = useMemo(
-    () => `${imageInfo.width ? `${imageInfo.width} × ${imageInfo.height}px` : 'Sin imagen'}`,
+    () => (imageInfo.width ? `${imageInfo.width} × ${imageInfo.height}px` : 'Sin imagen'),
     [imageInfo]
   )
 
@@ -248,7 +278,7 @@ export default function App() {
     if (!file) return
 
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      setError('Formato no compatible. Prueba con PNG, JPG, WEBP, GIF, BMP o ICO.')
+      setError('Formato no compatible. Usa PNG, JPG, WEBP, GIF, BMP o ICO.')
       return
     }
 
@@ -258,10 +288,21 @@ export default function App() {
       setFileName(file.name.replace(/\.[^/.]+$/, ''))
       setDetectedColors([])
       setSvgMarkup('')
-      setPaletteAccepted(false)
       setError('')
     }
     reader.readAsDataURL(file)
+  }
+
+  const applyPreset = (presetName) => {
+    setSelectedPreset(presetName)
+    if (!detectedColors.length) {
+      const colors = palettePresets[presetName].map((hex, index) => ({
+        id: `${hex}-${index}`,
+        label: `Color ${index + 1}`,
+        value: normalizeHex(hex)
+      }))
+      setDetectedColors(colors)
+    }
   }
 
   const detectPalette = () => {
@@ -284,7 +325,6 @@ export default function App() {
           value: normalizeHex(hex)
         }))
       )
-      setPaletteAccepted(false)
       setSvgMarkup('')
       setIsProcessing(false)
     }
@@ -304,7 +344,7 @@ export default function App() {
     )
   }
 
-  const updateColorByRgb = (id, component, value) => {
+  const updateColorByRgb = (id, channel, numericValue) => {
     setDetectedColors((current) =>
       current.map((color) => {
         if (color.id !== id) return color
@@ -314,7 +354,7 @@ export default function App() {
           r,
           g,
           b,
-          [component]: clamp(Number(value) || 0, 0, 255)
+          [channel]: clamp(Number(numericValue) || 0, 0, 255)
         }
 
         return {
@@ -327,7 +367,7 @@ export default function App() {
 
   const vectorizeImage = async () => {
     if (!imageSrc || !detectedColors.length) {
-      setError('Debes detectar paleta antes de vectorizar.')
+      setError('Debes detectar una paleta antes de vectorizar.')
       return
     }
 
@@ -342,7 +382,6 @@ export default function App() {
         backgroundColor
       })
       setSvgMarkup(svg)
-      setPaletteAccepted(true)
     } catch (err) {
       setError(err?.message || 'No se pudo generar el SVG.')
     } finally {
@@ -352,7 +391,6 @@ export default function App() {
 
   const downloadSvg = () => {
     if (!svgMarkup) return
-
     const blob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -362,26 +400,53 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
+  const downloadPng = async () => {
+    if (!svgMarkup) return
+    try {
+      await exportSvgToPng(svgMarkup, fileName || 'vectorized-image')
+    } catch {
+      setError('No se pudo exportar el PNG.')
+    }
+  }
+
   return (
-    <div className="min-h-screen bg-slate-950 px-4 py-8 text-slate-100 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl">
+    <div className="app-shell min-h-screen text-slate-100">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <header className="mb-8 text-center">
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-cyan-200">
+          <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-cyan-200">
             <span className="inline-block h-2 w-2 rounded-full bg-cyan-400" />
             SVG Converter Pro
           </div>
-          <h1 className="text-4xl font-black tracking-tight text-white md:text-5xl">
-            Convierte imágenes a SVG con edición de color
+          <h1 className="mt-4 text-4xl font-black tracking-tight text-white md:text-5xl">
+            Vectoriza imágenes y edita la paleta con precisión
           </h1>
-          <p className="mx-auto mt-4 max-w-2xl text-sm text-slate-300 md:text-base">
-            Sube una imagen, detecta los colores dominantes, corrige la paleta y descarga una versión vectorizada lista para usar.
+          <p className="mx-auto mt-4 max-w-3xl text-sm text-slate-300 md:text-base">
+            Sube tu imagen, detecta sus colores dominantes, corrige la paleta y exporta el resultado final como SVG o PNG.
           </p>
         </header>
 
-        <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
+        <div className="mb-6 flex flex-wrap items-center justify-center gap-3">
+          {Object.entries(palettePresets).map(([key, colors]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => applyPreset(key)}
+              className={`preset-pill ${selectedPreset === key ? 'active' : ''}`}
+            >
+              <span className="mr-2 flex items-center gap-1">
+                {colors.slice(0, 3).map((color) => (
+                  <span key={color} className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
+                ))}
+              </span>
+              {key}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <section className="glass-panel p-5 md:p-6">
             <div
-              className="upload-box flex min-h-[310px] cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed border-slate-600 p-5 text-center transition duration-200 hover:border-cyan-400 hover:bg-slate-800/60"
+              className="upload-box flex min-h-[320px] cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-slate-600 p-5 text-center transition duration-200 hover:border-cyan-400 hover:bg-slate-800/60"
               onClick={() => inputRef.current?.click()}
             >
               <input
@@ -412,64 +477,40 @@ export default function App() {
             </div>
 
             <div className="mt-5 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={detectPalette}
-                disabled={!imageSrc || isProcessing}
-                className="action-button primary"
-              >
+              <button type="button" onClick={detectPalette} disabled={!imageSrc || isProcessing} className="action-button primary">
                 {isProcessing ? 'Procesando...' : 'Detectar colores'}
               </button>
 
-              <button
-                type="button"
-                onClick={vectorizeImage}
-                disabled={!imageSrc || !detectedColors.length || isProcessing}
-                className="action-button success"
-              >
+              <button type="button" onClick={vectorizeImage} disabled={!imageSrc || !detectedColors.length || isProcessing} className="action-button success">
                 Aceptar y vectorizar
               </button>
 
-              <button
-                type="button"
-                onClick={downloadSvg}
-                disabled={!svgMarkup}
-                className="action-button secondary"
-              >
+              <button type="button" onClick={downloadSvg} disabled={!svgMarkup} className="action-button secondary">
                 Descargar SVG
+              </button>
+
+              <button type="button" onClick={downloadPng} disabled={!svgMarkup} className="action-button neutral">
+                Exportar PNG
               </button>
             </div>
 
             <div className="mt-5 grid gap-3 md:grid-cols-3">
               <label className="rounded-2xl border border-slate-700 bg-slate-900/70 p-3 text-sm text-slate-200">
-                <span className="mb-2 block text-xs uppercase tracking-wide text-slate-400">Tamaño de celda</span>
-                <input
-                  type="range"
-                  min="8"
-                  max="28"
-                  step="2"
-                  value={gridSize}
-                  onChange={(event) => setGridSize(Number(event.target.value))}
-                  className="w-full accent-cyan-400"
-                />
+                <span className="mb-2 block text-[10px] uppercase tracking-[0.2em] text-slate-400">Tamaño</span>
+                <input type="range" min="8" max="28" step="2" value={gridSize} onChange={(e) => setGridSize(Number(e.target.value))} className="w-full accent-cyan-400" />
                 <span className="mt-2 block text-cyan-300">{gridSize}px</span>
               </label>
 
               <label className="rounded-2xl border border-slate-700 bg-slate-900/70 p-3 text-sm text-slate-200">
-                <span className="mb-2 block text-xs uppercase tracking-wide text-slate-400">Fondo</span>
+                <span className="mb-2 block text-[10px] uppercase tracking-[0.2em] text-slate-400">Fondo</span>
                 <div className="flex items-center gap-3">
-                  <input
-                    type="color"
-                    value={backgroundColor}
-                    onChange={(event) => setBackgroundColor(event.target.value)}
-                    className="h-10 w-14 rounded-lg border-0 bg-transparent"
-                  />
+                  <input type="color" value={backgroundColor} onChange={(e) => setBackgroundColor(e.target.value)} className="h-10 w-12 rounded-lg border-0 bg-transparent" />
                   <span className="text-xs text-slate-300">{backgroundColor}</span>
                 </div>
               </label>
 
               <label className="rounded-2xl border border-slate-700 bg-slate-900/70 p-3 text-sm text-slate-200">
-                <span className="mb-2 block text-xs uppercase tracking-wide text-slate-400">Transparencia</span>
+                <span className="mb-2 block text-[10px] uppercase tracking-[0.2em] text-slate-400">Transparencia</span>
                 <button
                   type="button"
                   onClick={() => setPreserveTransparency((prev) => !prev)}
@@ -493,16 +534,13 @@ export default function App() {
           <aside className="glass-panel p-5 md:p-6">
             <div className="mb-4 flex items-center justify-between gap-3">
               <h2 className="text-xl font-bold text-white">Paleta detectada</h2>
-              {paletteAccepted && (
-                <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-300">
-                  Aceptada
-                </span>
-              )}
+              <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-slate-300">
+                {detectedColors.length ? 'Lista' : 'Vacía'}
+              </span>
             </div>
 
             <div className="mb-5 rounded-2xl border border-slate-700 bg-slate-950/50 p-3 text-sm text-slate-300">
-              <span className="text-slate-400">Imagen: </span>
-              {fileStats}
+              <span className="text-slate-400">Imagen:</span> {fileStats}
             </div>
 
             <div className="space-y-3">
@@ -512,20 +550,12 @@ export default function App() {
                   return (
                     <div key={color.id} className="rounded-2xl border border-slate-700 bg-slate-950/60 p-3">
                       <div className="mb-3 flex items-center gap-3">
-                        <div
-                          className="h-12 w-12 rounded-xl border border-slate-600 shadow-inner"
-                          style={{ backgroundColor: color.value }}
-                        />
+                        <div className="h-12 w-12 rounded-xl border border-slate-600 shadow-inner" style={{ backgroundColor: color.value }} />
                         <div className="flex-1">
                           <p className="text-sm font-semibold text-white">{color.label}</p>
                           <p className="text-xs text-slate-400">{color.value}</p>
                         </div>
-                        <input
-                          type="color"
-                          value={color.value}
-                          onChange={(event) => updateColorValue(color.id, event.target.value)}
-                          className="h-10 w-12 rounded-xl border border-slate-600 bg-transparent"
-                        />
+                        <input type="color" value={color.value} onChange={(e) => updateColorValue(color.id, e.target.value)} className="h-10 w-12 rounded-xl border border-slate-600 bg-transparent" />
                       </div>
 
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -535,25 +565,13 @@ export default function App() {
                               <span className="uppercase">{channel}</span>
                               <span>{rgb[channel]}</span>
                             </div>
-                            <input
-                              type="range"
-                              min="0"
-                              max="255"
-                              value={rgb[channel]}
-                              onChange={(event) => updateColorByRgb(color.id, channel, event.target.value)}
-                              className="w-full accent-cyan-400"
-                            />
+                            <input type="range" min="0" max="255" value={rgb[channel]} onChange={(e) => updateColorByRgb(color.id, channel, e.target.value)} className="w-full accent-cyan-400" />
                           </label>
                         ))}
                       </div>
 
                       <div className="mt-3">
-                        <input
-                          type="text"
-                          value={color.value}
-                          onChange={(event) => updateColorValue(color.id, event.target.value)}
-                          className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 outline-none ring-0 placeholder:text-slate-500 focus:border-cyan-500"
-                        />
+                        <input type="text" value={color.value} onChange={(e) => updateColorValue(color.id, e.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-500" />
                       </div>
                     </div>
                   )
@@ -568,20 +586,45 @@ export default function App() {
         </div>
 
         <section className="glass-panel mt-8 p-5 md:p-6">
-          <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-xl font-bold text-white">Vista previa vectorizada</h2>
-            <span className="text-sm text-slate-400">Output SVG</span>
+            <div className="flex gap-2">
+              <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-slate-300">Original</span>
+              <span className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.2em] text-cyan-200">SVG</span>
+            </div>
           </div>
 
-          {svgMarkup ? (
-            <div className="svg-preview rounded-3xl border border-slate-700 bg-slate-100 p-4">
-              <div dangerouslySetInnerHTML={{ __html: svgMarkup }} />
+          <div className="grid gap-5 lg:grid-cols-2">
+            <div className="rounded-3xl border border-slate-700 bg-slate-900/80 p-3">
+              <div className="mb-3 flex items-center justify-between text-xs uppercase tracking-[0.2em] text-slate-400">
+                <span>Original</span>
+                <span>{fileStats}</span>
+              </div>
+              {imageSrc ? (
+                <img src={imageSrc} alt="Original" className="max-h-[420px] w-full rounded-2xl object-contain bg-white" />
+              ) : (
+                <div className="flex min-h-[260px] items-center justify-center rounded-2xl border border-dashed border-slate-600 bg-slate-950/40 text-sm text-slate-400">
+                  Sin imagen cargada
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="rounded-3xl border border-dashed border-slate-600 bg-slate-950/40 p-10 text-center text-slate-400">
-              La vista previa del SVG aparecerá aquí después de vectorizar la imagen.
+
+            <div className="rounded-3xl border border-slate-700 bg-slate-900/80 p-3">
+              <div className="mb-3 flex items-center justify-between text-xs uppercase tracking-[0.2em] text-slate-400">
+                <span>Vector</span>
+                <span>SVG</span>
+              </div>
+              {svgMarkup ? (
+                <div className="svg-preview rounded-2xl bg-white p-2">
+                  <div dangerouslySetInnerHTML={{ __html: svgMarkup }} />
+                </div>
+              ) : (
+                <div className="flex min-h-[260px] items-center justify-center rounded-2xl border border-dashed border-slate-600 bg-slate-950/40 text-sm text-slate-400">
+                  La vista previa aparecerá aquí.
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </section>
       </div>
     </div>

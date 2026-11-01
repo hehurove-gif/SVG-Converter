@@ -23,9 +23,9 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top, rgba(34, 211, 238, 0.12), transparent 30%),
-    radial-gradient(circle at right, rgba(59, 130, 246, 0.18), transparent 25%),
-    linear-gradient(135deg, #020817 0%, #0f172a 40%, #111827 100%);
+    radial-gradient(circle at top, rgba(34, 211, 238, 0.12), transparent 25%),
+    radial-gradient(circle at right, rgba(96, 165, 250, 0.16), transparent 22%),
+    linear-gradient(135deg, #020817 0%, #0f172a 38%, #111827 100%);
 }
 
 * {
@@ -57,18 +57,51 @@ input[type='range'] {
   accent-color: #22d3ee;
 }
 
+.app-shell {
+  background:
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.12), transparent 20%),
+    radial-gradient(circle at bottom right, rgba(168, 85, 247, 0.09), transparent 22%);
+}
+
 .glass-panel {
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 1.75rem;
-  background: rgba(15, 23, 42, 0.7);
+  background: rgba(15, 23, 42, 0.72);
   backdrop-filter: blur(14px);
-  box-shadow: 0 25px 60px rgba(2, 6, 23, 0.45);
+  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.46);
 }
 
 .upload-box {
   background:
-    linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(15, 23, 42, 0.7)),
-    radial-gradient(circle at top, rgba(34, 211, 238, 0.08), transparent 30%);
+    linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0.7)),
+    radial-gradient(circle at top, rgba(34, 211, 238, 0.1), transparent 30%);
+}
+
+.preset-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.6rem 0.9rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.7);
+  color: #e2e8f0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  transition: all 0.2s ease;
+}
+
+.preset-pill:hover {
+  border-color: rgba(34, 211, 238, 0.5);
+  transform: translateY(-1px);
+}
+
+.preset-pill.active {
+  border-color: rgba(34, 211, 238, 0.7);
+  background: rgba(14, 165, 233, 0.12);
+  color: #cffafe;
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.18);
 }
 
 .action-button {
@@ -79,13 +112,13 @@ input[type='range'] {
   border: 1px solid transparent;
   padding: 0.8rem 1.1rem;
   font-weight: 700;
-  font-size: 0.92rem;
+  font-size: 0.9rem;
   transition: transform 0.2s ease, opacity 0.2s ease, filter 0.2s ease;
 }
 
 .action-button:hover:not(:disabled) {
   transform: translateY(-1px);
-  filter: brightness(1.05);
+  filter: brightness(1.08);
 }
 
 .action-button:disabled {
@@ -111,16 +144,22 @@ input[type='range'] {
   color: #e2e8f0;
 }
 
+.action-button.neutral {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(14, 165, 233, 0.2));
+  color: #e9d5ff;
+  border-color: rgba(168, 85, 247, 0.35);
+}
+
 .svg-preview {
   overflow: auto;
-  max-height: 680px;
+  max-height: 520px;
 }
 
 .svg-preview svg {
   display: block;
   width: 100%;
   height: auto;
-  max-height: 620px;
+  max-height: 500px;
   border-radius: 1rem;
   background: #fff;
 }
