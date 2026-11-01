@@ -17,14 +17,15 @@ npm run build
 npm run preview
 ```
 
-## Deploy en Cloudflare Pages
+## Deploy en Cloudflare
 
-1. Conecta tu repositorio en Cloudflare Pages.
-2. Usa estas opciones:
-   - Framework preset: Vite
-   - Build command: `npm run build`
-   - Build output directory: `dist`
-3. La app ya incluye el archivo `public/_redirects` para manejar rutas de SPA.
+El proyecto se despliega como Worker con assets estáticos (config en `wrangler.jsonc`).
+
+- Build command: `npm run build`
+- Deploy command: `npx wrangler deploy`
+- Preview command: `npx wrangler preview`
+
+El fallback de SPA se maneja con `not_found_handling: "single-page-application"` en `wrangler.jsonc`. El nombre del Worker (`svg-converter`) debe coincidir con el del proyecto en el dashboard de Cloudflare.
 
 ## Características
 
