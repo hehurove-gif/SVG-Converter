@@ -137,7 +137,7 @@ export default function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [params, setParams] = useState({ colors: 8, detail: 3, smooth: 2 })
+  const [params, setParams] = useState({ colors: 12, detail: 3, smooth: 2 })
   const [runId, setRunId] = useState(0)
   const [seg, setSeg] = useState(null)
   const [edit, setEdit] = useState({ fills: {}, hidden: {} })
@@ -146,6 +146,7 @@ export default function App() {
   const [selected, setSelected] = useState(null)
   const [hoverHex, setHoverHex] = useState(null)
   const [selectedPreset, setSelectedPreset] = useState('')
+  const [zoom, setZoom] = useState(1)
 
   // Vectoriza automáticamente al subir la imagen o al cambiar los ajustes.
   useEffect(() => {
@@ -354,6 +355,7 @@ export default function App() {
       setSelected(null)
       setNotice('')
       setFileName(file.name.replace(/\.[^/.]+$/, ''))
+      setZoom(1)
       setImageSrc(String(reader.result))
     }
     reader.readAsDataURL(file)
@@ -472,92 +474,113 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <>
-              <div className="editor-toolbar">
-                <button type="button" className="action-button primary" onClick={() => setRunId((n) => n + 1)} disabled={busy}>
-                  {busy ? 'Vectorizando…' : 'Vectorizar imagen'}
-                </button>
-                <button type="button" className="action-button secondary" onClick={removeBackground} disabled={!ready || busy}>
-                  Eliminar fondo
-                </button>
-                <button type="button" className="action-button neutral" onClick={undo} disabled={!history.length}>
-                  Deshacer
-                </button>
-                <button type="button" className="action-button neutral" onClick={resetAll} disabled={!ready}>
-                  Restaurar todo
-                </button>
-
-                <div className="toolbar-spacer" />
-
-                <button type="button" className="action-button success" onClick={downloadSvg} disabled={!ready}>
-                  Descargar SVG
-                </button>
-                <button type="button" className="action-button neutral" onClick={downloadPng} disabled={!ready}>
-                  Exportar PNG
-                </button>
-              </div>
-
-              <div className="mode-row">
-                <span className="control-label">Al cambiar un color</span>
-                <div className="segmented" role="group" aria-label="Alcance del cambio de color">
-                  <button type="button" className={mode === 'group' ? 'on' : ''} onClick={() => changeMode('group')}>
-                    Todas las zonas del mismo color
+            <div className="workbench">
+              <aside className="tools">
+                <div className="tool-group">
+                  <p className="tool-title">Imagen</p>
+                  <button type="button" className="tool-btn" onClick={() => inputRef.current?.click()}>
+                    <span className="tool-icon">⤴</span>Cambiar imagen
                   </button>
-                  <button type="button" className={mode === 'region' ? 'on' : ''} onClick={() => changeMode('region')}>
-                    Solo la zona pulsada
+                  <button type="button" className="tool-btn primary" onClick={() => setRunId((n) => n + 1)} disabled={busy}>
+                    <span className="tool-icon">✦</span>
+                    {busy ? 'Vectorizando…' : 'Vectorizar imagen'}
                   </button>
                 </div>
-              </div>
 
-              <div className="controls-grid">
-                <label className="control-card">
-                  <span className="control-label">Colores</span>
-                  <input type="range" min="2" max="16" step="1" value={params.colors} onChange={(e) => setParam('colors', Number(e.target.value))} />
-                  <strong>{params.colors}</strong>
-                </label>
+                <div className="tool-group">
+                  <p className="tool-title">Edición</p>
+                  <button type="button" className="tool-btn" onClick={removeBackground} disabled={!ready || busy}>
+                    <span className="tool-icon">◌</span>Eliminar fondo
+                  </button>
+                  <button type="button" className="tool-btn" onClick={undo} disabled={!history.length}>
+                    <span className="tool-icon">↶</span>Deshacer
+                  </button>
+                  <button type="button" className="tool-btn" onClick={resetAll} disabled={!ready}>
+                    <span className="tool-icon">⟲</span>Restaurar todo
+                  </button>
+                </div>
 
-                <label className="control-card">
-                  <span className="control-label">Detalle</span>
-                  <input type="range" min="1" max="5" step="1" value={params.detail} onChange={(e) => setParam('detail', Number(e.target.value))} />
-                  <strong>{DETAIL_LABELS[params.detail - 1]}</strong>
-                </label>
-
-                <label className="control-card">
-                  <span className="control-label">Suavizado</span>
-                  <input type="range" min="0" max="3" step="1" value={params.smooth} onChange={(e) => setParam('smooth', Number(e.target.value))} />
-                  <strong>{SMOOTH_LABELS[params.smooth]}</strong>
-                </label>
-              </div>
-              <p className="hint">Al cambiar estos tres ajustes la imagen se vuelve a vectorizar y se pierden las ediciones.</p>
-
-              {error && <div className="error-box">{error}</div>}
-              {notice && <div className="notice-box">{notice}</div>}
-
-              <div className="editor-grid">
-                <div className="editor-card original-card">
-                  <div className="preview-label-row">
-                    <span>Original</span>
-                    <strong>{fileName}</strong>
+                <div className="tool-group">
+                  <p className="tool-title">Al cambiar un color</p>
+                  <div className="segmented stacked" role="group" aria-label="Alcance del cambio de color">
+                    <button type="button" className={mode === 'group' ? 'on' : ''} onClick={() => changeMode('group')}>
+                      Todas las zonas del mismo color
+                    </button>
+                    <button type="button" className={mode === 'region' ? 'on' : ''} onClick={() => changeMode('region')}>
+                      Solo la zona pulsada
+                    </button>
                   </div>
-                  <img src={imageSrc} alt="Imagen original" className="original-image" />
                 </div>
+
+                <div className="tool-group">
+                  <p className="tool-title">Ajustes</p>
+                  <label className="tool-slider">
+                    <span>
+                      Colores <strong>{params.colors}</strong>
+                    </span>
+                    <input type="range" min="2" max="32" step="1" value={params.colors} onChange={(e) => setParam('colors', Number(e.target.value))} />
+                  </label>
+                  <label className="tool-slider">
+                    <span>
+                      Detalle <strong>{DETAIL_LABELS[params.detail - 1]}</strong>
+                    </span>
+                    <input type="range" min="1" max="5" step="1" value={params.detail} onChange={(e) => setParam('detail', Number(e.target.value))} />
+                  </label>
+                  <label className="tool-slider">
+                    <span>
+                      Suavizado <strong>{SMOOTH_LABELS[params.smooth]}</strong>
+                    </span>
+                    <input type="range" min="0" max="3" step="1" value={params.smooth} onChange={(e) => setParam('smooth', Number(e.target.value))} />
+                  </label>
+                  <p className="hint">Al cambiar estos ajustes se vuelve a vectorizar y se pierden las ediciones.</p>
+                </div>
+
+                <div className="tool-group">
+                  <p className="tool-title">Exportar</p>
+                  <button type="button" className="tool-btn success" onClick={downloadSvg} disabled={!ready}>
+                    <span className="tool-icon">⤓</span>Descargar SVG
+                  </button>
+                  <button type="button" className="tool-btn" onClick={downloadPng} disabled={!ready}>
+                    <span className="tool-icon">⤓</span>Exportar PNG
+                  </button>
+                </div>
+              </aside>
+
+              <div className="stage-column">
+                {error && <div className="error-box">{error}</div>}
+                {notice && <div className="notice-box">{notice}</div>}
 
                 <div className="editor-card vector-card">
                   <div className="preview-label-row">
                     <span>Vector · haz clic en una zona</span>
+                    <div className="zoom-controls">
+                      <button type="button" onClick={() => setZoom((z) => Math.max(1, Math.round((z - 0.5) * 10) / 10))} disabled={zoom <= 1} aria-label="Alejar">
+                        −
+                      </button>
+                      <span>{Math.round(zoom * 100)}%</span>
+                      <button type="button" onClick={() => setZoom((z) => Math.min(4, Math.round((z + 0.5) * 10) / 10))} disabled={zoom >= 4} aria-label="Acercar">
+                        +
+                      </button>
+                      <button type="button" onClick={() => setZoom(1)} disabled={zoom === 1}>
+                        Ajustar
+                      </button>
+                    </div>
                     <strong>{ready ? `${visibleRegions.length} zonas` : '—'}</strong>
                   </div>
 
-                  <div className="stage-wrap">
+                  <div className={`stage-wrap ${zoom > 1 ? 'zoomed' : ''}`}>
                     {ready ? (
                       <div
                         ref={stageRef}
                         className="editor-stage checker"
-                        style={{ aspectRatio: String(ratio), width: `min(100%, ${Math.round(560 * ratio)}px)` }}
+                        style={{
+                          aspectRatio: String(ratio),
+                          width: zoom === 1 ? `min(100%, ${Math.round(640 * ratio)}px)` : `${Math.round(zoom * 100)}%`
+                        }}
                         onClick={() => setSelected(null)}
                       >
                         <svg className="editor-svg" viewBox={`0 0 ${seg.width} ${seg.height}`} preserveAspectRatio="xMidYMid meet">
-                          <g fillRule="evenodd" strokeWidth="0.6" strokeLinejoin="round">
+                          <g fillRule="evenodd" strokeWidth="0.5" strokeLinejoin="round">
                             {visibleRegions.map((region) => (
                               <path
                                 key={region.id}
@@ -603,6 +626,16 @@ export default function App() {
                       <div className="preview-placeholder">{busy ? 'Vectorizando…' : 'Aquí aparecerá tu imagen vectorizada.'}</div>
                     )}
                   </div>
+                </div>
+              </div>
+
+              <div className="side-column">
+                <div className="editor-card original-card">
+                  <div className="preview-label-row">
+                    <span>Original</span>
+                    <strong>{fileName}</strong>
+                  </div>
+                  <img src={imageSrc} alt="Imagen original" className="original-image" />
                 </div>
 
                 <aside className="editor-card palette-card">
@@ -655,14 +688,18 @@ export default function App() {
                         ))}
                       </div>
 
-                      {hiddenCount > 0 && <p className="hint">{hiddenCount} {hiddenCount === 1 ? 'zona eliminada' : 'zonas eliminadas'} · «Restaurar todo» {hiddenCount === 1 ? 'la recupera' : 'las recupera'}.</p>}
+                      {hiddenCount > 0 && (
+                        <p className="hint">
+                          {hiddenCount} {hiddenCount === 1 ? 'zona eliminada' : 'zonas eliminadas'} · «Restaurar todo» {hiddenCount === 1 ? 'la recupera' : 'las recupera'}.
+                        </p>
+                      )}
                     </>
                   ) : (
                     <div className="empty-state-card">{busy ? 'Detectando colores…' : 'Sin colores todavía.'}</div>
                   )}
                 </aside>
               </div>
-            </>
+            </div>
           )}
         </section>
 
