@@ -1,51 +1,21 @@
-# SVG Converter
+# Dependencies
+node_modules/
 
-Una pequeña aplicación web con React + Vite + Tailwind para convertir imágenes comunes a SVG usando una aproximación vectorial por bloques de color.
+# Build output
+dist/
 
-## Características
+# Env and local files
+.env
+.env.*
+!.env.example
+.dev.vars
+.wrangler/
 
-- Soporta archivos PNG, JPG, WEBP, GIF y BMP.
-- Detecta la paleta dominante de la imagen.
-- Permite aceptar la paleta o editar cada color manualmente.
-- Vectoriza la imagen en bloques SVG y permite descargar el resultado como archivo `.svg`.
+# Logs
+*.log
+npm-debug.log*
 
-## Requisitos
-
-- Node.js 18 o superior
-- npm
-
-## Instalación
-
-```bash
-npm install
-```
-
-## Ejecutar en desarrollo
-
-```bash
-npm run dev
-```
-
-## Construir para producción
-
-```bash
-npm run build
-```
-
-## Vista previa de producción
-
-```bash
-npm run preview
-```
-
-## ¿Qué hace la herramienta?
-
-1. El usuario sube una imagen.
-2. La aplicación detecta colores dominantes.
-3. Se muestran los colores para que el usuario los acepte o edite.
-4. La imagen se vectoriza en forma de rectángulos SVG con la paleta seleccionada.
-5. El usuario puede descargar el resultado en formato SVG.
-
-## Importante
-
-Esta es una solución de vectorización ligera basada en bloques de color y es ideal para prototipos y herramientas de conversión rápida. Para un trazado más avanzado, se recomienda usar librerías de tracing vectorial más complejas en producción.
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

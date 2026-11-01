@@ -1,628 +1,740 @@
-import { useMemo, useRef, useState } from 'react'
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/x-icon']
-
-const palettePresets = {
-  vivid: ['#0F172A', '#2563EB', '#F59E0B', '#10B981', '#EF4444', '#F8FAFC'],
-  pastel: ['#FDE68A', '#F9A8D4', '#BFDBFE', '#86EFAC', '#C4B5FD', '#FFFFFF'],
-  mono: ['#111827', '#374151', '#6B7280', '#D1D5DB', '#F3F4F6', '#FFFFFF'],
-  neon: ['#22D3EE', '#A78BFA', '#F472B6', '#FACC15', '#34D399', '#0F172A']
+:root {
+  color: #e2e8f0;
+  background: #020817;
+  font-family: Inter, 'Segoe UI', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value))
+html {
+  scroll-behavior: smooth;
 }
 
-function normalizeHex(hex) {
-  const clean = (hex || '#000000').replace(/[^#0-9a-fA-F]/g, '')
-  if (!clean) return '#000000'
-
-  if (clean.length === 3) {
-    return `#${clean.split('').map((char) => char + char).join('')}`.toUpperCase()
-  }
-
-  if (clean.length === 6) {
-    return `#${clean}`.toUpperCase()
-  }
-
-  return '#000000'
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(34, 211, 238, 0.14), transparent 22%),
+    radial-gradient(circle at bottom right, rgba(168, 85, 247, 0.12), transparent 20%),
+    linear-gradient(135deg, #020817 0%, #0f172a 38%, #111827 100%);
 }
 
-function hexToRgb(hex) {
-  const value = normalizeHex(hex).replace('#', '')
-  const number = Number.parseInt(value, 16)
-  return { r: (number >> 16) & 255, g: (number >> 8) & 255, b: number & 255 }
+* { box-sizing: border-box; }
+button, input { font: inherit; }
+input[type='file'] { display: none; }
+input[type='range'] { accent-color: #22d3ee; }
+
+input[type='color'] {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  width: 2.9rem;
+  height: 2.6rem;
+  border-radius: 0.8rem;
+  background: transparent;
+  cursor: pointer;
 }
 
-function rgbToHex(r, g, b) {
-  const toHex = (value) => value.toString(16).padStart(2, '0')
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase()
+input[type='color']::-webkit-color-swatch-wrapper { padding: 0; }
+input[type='color']::-webkit-color-swatch { border: none; border-radius: 0.8rem; }
+
+.app-shell {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
 }
 
-function buildPaletteFromImage(image, maxColors = 6) {
-  const canvas = document.createElement('canvas')
-  const maxSize = 180
-  const scale = Math.min(1, maxSize / Math.max(image.width, image.height))
-  const width = Math.max(1, Math.round(image.width * scale))
-  const height = Math.max(1, Math.round(image.height * scale))
-
-  canvas.width = width
-  canvas.height = height
-
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return [...palettePresets.vivid]
-
-  ctx.drawImage(image, 0, 0, width, height)
-  const { data } = ctx.getImageData(0, 0, width, height)
-  const buckets = new Map()
-
-  for (let i = 0; i < data.length; i += 4) {
-    const alpha = data[i + 3]
-    if (alpha < 30) continue
-
-    const r = data[i]
-    const g = data[i + 1]
-    const b = data[i + 2]
-    const key = `${Math.round(r / 32) * 32},${Math.round(g / 32) * 32},${Math.round(b / 32) * 32}`
-    buckets.set(key, (buckets.get(key) || 0) + 1)
-  }
-
-  const sortedKeys = [...buckets.entries()].sort((a, b) => b[1] - a[1]).map(([key]) => key)
-  const uniqueColors = []
-
-  for (const key of sortedKeys) {
-    const [r, g, b] = key.split(',').map(Number)
-    const candidate = rgbToHex(r, g, b)
-
-    const alreadyClose = uniqueColors.some((existing) => {
-      const current = hexToRgb(existing)
-      const distance = Math.sqrt((current.r - r) ** 2 + (current.g - g) ** 2 + (current.b - b) ** 2)
-      return distance < 40
-    })
-
-    if (!alreadyClose) uniqueColors.push(candidate)
-    if (uniqueColors.length >= maxColors) break
-  }
-
-  return uniqueColors.length ? uniqueColors : [...palettePresets.vivid]
+.top-glow {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 18% 10%, rgba(34, 211, 238, 0.14), transparent 20%),
+    radial-gradient(circle at 80% 12%, rgba(168, 85, 247, 0.1), transparent 20%);
+  pointer-events: none;
 }
 
-function getClosestColor(hex, palette) {
-  const target = hexToRgb(hex)
-  let closest = palette[0] || '#000000'
-  let minDistance = Number.POSITIVE_INFINITY
-
-  for (const candidate of palette) {
-    const color = hexToRgb(candidate)
-    const distance = Math.sqrt((target.r - color.r) ** 2 + (target.g - color.g) ** 2 + (target.b - color.b) ** 2)
-    if (distance < minDistance) {
-      minDistance = distance
-      closest = candidate
-    }
-  }
-
-  return closest
+.container {
+  position: relative;
+  z-index: 1;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
 }
 
-function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
-  return new Promise((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => {
-      const cellSize = clamp(Number(options.cellSize) || 14, 8, 30)
-      const backgroundColor = normalizeHex(options.backgroundColor || '#FFFFFF')
-      const preserveTransparency = Boolean(options.preserveTransparency)
-      const maxWidth = 900
-      const scale = Math.min(1, maxWidth / image.width)
-      const width = Math.max(1, Math.round(image.width * scale))
-      const height = Math.max(1, Math.round(image.height * scale))
-
-      const canvas = document.createElement('canvas')
-      canvas.width = width
-      canvas.height = height
-
-      const ctx = canvas.getContext('2d')
-      if (!ctx) {
-        reject(new Error('No se pudo preparar el canvas para vectorizar.'))
-        return
-      }
-
-      ctx.drawImage(image, 0, 0, width, height)
-      const imageData = ctx.getImageData(0, 0, width, height)
-      const blocks = []
-
-      for (let y = 0; y < height; y += cellSize) {
-        for (let x = 0; x < width; x += cellSize) {
-          let totalR = 0
-          let totalG = 0
-          let totalB = 0
-          let totalA = 0
-          let count = 0
-
-          for (let dy = 0; dy < cellSize; dy += 1) {
-            const py = y + dy
-            if (py >= height) continue
-
-            for (let dx = 0; dx < cellSize; dx += 1) {
-              const px = x + dx
-              if (px >= width) continue
-
-              const index = (py * width + px) * 4
-              const alpha = imageData.data[index + 3]
-              if (alpha < 12) continue
-
-              totalR += imageData.data[index]
-              totalG += imageData.data[index + 1]
-              totalB += imageData.data[index + 2]
-              totalA += alpha
-              count += 1
-            }
-          }
-
-          if (count === 0) continue
-
-          const avgR = Math.round(totalR / count)
-          const avgG = Math.round(totalG / count)
-          const avgB = Math.round(totalB / count)
-          const avgAlpha = Math.round(totalA / count)
-          const averageHex = rgbToHex(avgR, avgG, avgB)
-          const nearest = getClosestColor(averageHex, palette)
-          const opacity = preserveTransparency ? clamp(avgAlpha / 255, 0.2, 1) : 1
-
-          blocks.push(`<rect x="${x}" y="${y}" width="${cellSize + 1}" height="${cellSize + 1}" fill="${nearest}" fill-opacity="${opacity}" />`)
-        }
-      }
-
-      const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
-          <rect width="${width}" height="${height}" fill="${backgroundColor}" />
-          ${blocks.join('')}
-        </svg>
-      `.trim()
-
-      resolve(svg)
-    }
-
-    image.onerror = () => reject(new Error('No se pudo leer la imagen.'))
-    image.src = imageSrc
-  })
+.hero {
+  padding-top: 8px;
 }
 
-async function exportSvgToPng(svgString, filename) {
-  const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
-  const url = URL.createObjectURL(svgBlob)
+.brand-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(10px);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #e2e8f0;
+}
 
-  try {
-    const img = new Image()
-    const loaded = new Promise((resolve, reject) => {
-      img.onload = resolve
-      img.onerror = reject
-      img.src = url
-    })
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 0.6rem;
+  background: linear-gradient(135deg, #22d3ee, #8b5cf6);
+  color: #020817;
+  font-weight: 900;
+}
 
-    await loaded
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap: 1.25rem;
+  margin-top: 1.6rem;
+  align-items: center;
+}
 
-    const canvas = document.createElement('canvas')
-    const width = img.naturalWidth || 1200
-    const height = img.naturalHeight || 1200
-    canvas.width = width
-    canvas.height = height
+.eyebrow,
+.panel-kicker {
+  margin: 0 0 0.5rem;
+  color: #67e8f9;
+  font-size: 0.72rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
 
-    const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error('Canvas no disponible')
+.hero-copy h1 {
+  margin: 0;
+  max-width: 620px;
+  font-size: clamp(2.7rem, 5vw, 4.6rem);
+  line-height: 0.96;
+  letter-spacing: -0.065em;
+  color: #f8fafc;
+}
 
-    ctx.fillStyle = '#FFFFFF'
-    ctx.fillRect(0, 0, width, height)
-    ctx.drawImage(img, 0, 0, width, height)
+.subhead {
+  max-width: 720px;
+  margin-top: 1rem;
+  color: #cbd5e1;
+  font-size: 1.04rem;
+}
 
-    const pngUrl = canvas.toDataURL('image/png')
-    const link = document.createElement('a')
-    link.href = pngUrl
-    link.download = `${filename || 'vectorized-image'}.png`
-    link.click()
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin-top: 1.5rem;
+}
 
-    URL.revokeObjectURL(url)
-  } catch (error) {
-    URL.revokeObjectURL(url)
-    throw error
+.primary-button,
+.secondary-button,
+.action-button,
+.toggle-button,
+.preset-pill {
+  transition: transform 0.2s ease, filter 0.2s ease, border-color 0.2s ease;
+}
+
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3rem;
+  padding: 0.82rem 1.2rem;
+  border: none;
+  border-radius: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-button {
+  background: linear-gradient(135deg, #22d3ee, #3b82f6);
+  color: #03121b;
+  box-shadow: 0 18px 40px rgba(59, 130, 246, 0.18);
+}
+
+.secondary-button {
+  background: rgba(15, 23, 42, 0.7);
+  color: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.action-button:hover,
+.toggle-button:hover,
+.preset-pill:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+}
+
+.stats-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 1.4rem;
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(12px);
+}
+
+.stats-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.stats-label {
+  color: #94a3b8;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.stats-item strong {
+  color: #f8fafc;
+  font-size: 0.97rem;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1.6rem;
+}
+
+.feature-card {
+  padding: 1.1rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 1.3rem;
+  background: rgba(15, 23, 42, 0.72);
+  box-shadow: 0 18px 45px rgba(2, 6, 23, 0.18);
+}
+
+.feature-icon {
+  display: grid;
+  place-items: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 0.8rem;
+  background: rgba(34, 211, 238, 0.08);
+  color: #67e8f9;
+  font-size: 1.1rem;
+}
+
+.feature-card h3 {
+  margin: 0.9rem 0 0.38rem;
+  color: #f8fafc;
+  font-size: 1.1rem;
+}
+
+.feature-card p {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.94rem;
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-top: 1.6rem;
+}
+
+.preset-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.68rem;
+  padding: 0.62rem 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 9999px;
+  background: rgba(15, 23, 42, 0.75);
+  color: #dbeafe;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.preset-pill.active {
+  border-color: rgba(34, 211, 238, 0.65);
+  background: rgba(14, 165, 233, 0.08);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.08);
+}
+
+.preset-swatches {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+}
+
+.preset-swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  gap: 1.25rem;
+  margin-top: 1.8rem;
+}
+
+.panel {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 1.7rem;
+  background: rgba(15, 23, 42, 0.72);
+  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.35);
+  backdrop-filter: blur(12px);
+}
+
+.panel-main,
+.panel-side,
+.preview-panel {
+  padding: 1.15rem;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+h2 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: clamp(1.2rem, 2vw, 1.6rem);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.4rem 0.72rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.9);
+  color: #cbd5e1;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.badge.accent {
+  border-color: rgba(34, 211, 238, 0.4);
+  background: rgba(34, 211, 238, 0.08);
+  color: #a5f3fc;
+}
+
+.upload-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 330px;
+  border: 1px dashed rgba(148, 163, 184, 0.36);
+  border-radius: 1.4rem;
+  background:
+    linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0.7)),
+    radial-gradient(circle at top, rgba(34, 211, 238, 0.08), transparent 28%);
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.upload-box:hover {
+  border-color: rgba(34, 211, 238, 0.65);
+  transform: translateY(-1px);
+}
+
+.upload-preview-wrap {
+  width: 100%;
+  padding: 1rem;
+}
+
+.upload-preview,
+.preview-image {
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 1rem;
+  background: #fff;
+}
+
+.upload-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1rem;
+}
+
+.upload-icon {
+  display: grid;
+  place-items: center;
+  width: 4rem;
+  height: 4rem;
+  border-radius: 1rem;
+  background: rgba(34, 211, 238, 0.08);
+  color: #67e8f9;
+  font-size: 2rem;
+}
+
+.upload-empty-state p,
+.upload-preview-wrap p {
+  margin: 0.8rem 0 0;
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.upload-empty-state span {
+  margin-top: 0.35rem;
+  color: #94a3b8;
+  font-size: 0.84rem;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.1rem;
+}
+
+.action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.85rem;
+  padding: 0.8rem 1.05rem;
+  border: none;
+  border-radius: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.action-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.action-button.primary {
+  background: linear-gradient(135deg, #22d3ee, #3b82f6);
+  color: #03121b;
+  box-shadow: 0 14px 26px rgba(37, 99, 235, 0.22);
+}
+
+.action-button.success {
+  background: linear-gradient(135deg, #10b981, #34d399);
+  color: #062218;
+  box-shadow: 0 14px 26px rgba(16, 185, 129, 0.2);
+}
+
+.action-button.secondary {
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: #f8fafc;
+}
+
+.action-button.neutral {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(14, 165, 233, 0.2));
+  border: 1px solid rgba(168, 85, 247, 0.28);
+  color: #e9d5ff;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.1rem;
+}
+
+.control-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.control-label {
+  display: block;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.control-card strong {
+  color: #67e8f9;
+  font-size: 0.94rem;
+}
+
+.color-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  color: #dbeafe;
+  font-size: 0.8rem;
+}
+
+.toggle-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 0.8rem;
+  background: rgba(15, 23, 42, 0.8);
+  color: #f8fafc;
+  cursor: pointer;
+}
+
+.toggle-button.on {
+  border-color: rgba(52, 211, 153, 0.42);
+  background: rgba(16, 185, 129, 0.08);
+  color: #a7f3d0;
+}
+
+.toggle-indicator {
+  font-size: 1.1rem;
+}
+
+.error-box {
+  margin-top: 1rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(239, 68, 68, 0.38);
+  background: rgba(239, 68, 68, 0.08);
+  color: #fecaca;
+  font-size: 0.88rem;
+}
+
+.palette-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.color-card {
+  padding: 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.color-header {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.color-sample {
+  width: 2.8rem;
+  height: 2.8rem;
+  border-radius: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+}
+
+.color-header p {
+  margin: 0;
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.color-header small {
+  color: #94a3b8;
+}
+
+.rgb-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+
+.rgb-slider {
+  padding: 0.55rem 0.5rem;
+  border-radius: 0.8rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.rgb-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.42rem;
+  color: #cbd5e1;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hex-input {
+  width: 100%;
+  margin-top: 0.8rem;
+  padding: 0.72rem 0.8rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.8rem;
+  background: rgba(15, 23, 42, 0.8);
+  color: #f8fafc;
+  outline: none;
+}
+
+.hex-input:focus {
+  border-color: rgba(34, 211, 238, 0.5);
+}
+
+.empty-state-card {
+  padding: 1rem;
+  border: 1px dashed rgba(148, 163, 184, 0.32);
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.52);
+  color: #cbd5e1;
+  text-align: center;
+}
+
+.preview-panel {
+  margin-top: 1.2rem;
+}
+
+.preview-header {
+  margin-bottom: 0.9rem;
+}
+
+.preview-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.preview-tags span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.38rem 0.72rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.7);
+  color: #cbd5e1;
+  font-size: 0.64rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.preview-tags .tag-highlight {
+  border-color: rgba(34, 211, 238, 0.4);
+  background: rgba(34, 211, 238, 0.08);
+  color: #a5f3fc;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.preview-card {
+  padding: 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 1.2rem;
+  background: rgba(15, 23, 42, 0.8);
+}
+
+.preview-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.preview-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 260px;
+  text-align: center;
+  border: 1px dashed rgba(148, 163, 184, 0.28);
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.46);
+  color: #94a3b8;
+}
+
+.svg-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 260px;
+  border-radius: 1rem;
+  background: #fff;
+  overflow: auto;
+}
+
+.svg-container svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 420px;
+  background: #fff;
+}
+
+@media (max-width: 980px) {
+  .hero-grid,
+  .workspace-grid,
+  .preview-grid,
+  .feature-grid {
+    grid-template-columns: 1fr;
   }
 }
 
-export default function App() {
-  const inputRef = useRef(null)
-  const [imageSrc, setImageSrc] = useState('')
-  const [fileName, setFileName] = useState('')
-  const [error, setError] = useState('')
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [imageInfo, setImageInfo] = useState({ width: 0, height: 0 })
-  const [detectedColors, setDetectedColors] = useState([])
-  const [selectedPreset, setSelectedPreset] = useState('vivid')
-  const [svgMarkup, setSvgMarkup] = useState('')
-  const [backgroundColor, setBackgroundColor] = useState('#FFFFFF')
-  const [gridSize, setGridSize] = useState(14)
-  const [preserveTransparency, setPreserveTransparency] = useState(true)
-
-  const fileStats = useMemo(
-    () => (imageInfo.width ? `${imageInfo.width} × ${imageInfo.height}px` : 'No image'),
-    [imageInfo]
-  )
-
-  const handleFileSelection = (event) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    if (!ACCEPTED_TYPES.includes(file.type)) {
-      setError('Formato no compatible. Prueba con PNG, JPG, WEBP, GIF, BMP o ICO.')
-      return
-    }
-
-    const reader = new FileReader()
-    reader.onload = () => {
-      setImageSrc(String(reader.result))
-      setFileName(file.name.replace(/\.[^/.]+$/, ''))
-      setDetectedColors([])
-      setSvgMarkup('')
-      setError('')
-    }
-    reader.readAsDataURL(file)
+@media (max-width: 640px) {
+  .hero-actions,
+  .action-row {
+    flex-direction: column;
   }
 
-  const applyPreset = (presetName) => {
-    setSelectedPreset(presetName)
-    if (detectedColors.length) return
-
-    const colors = palettePresets[presetName].map((hex, index) => ({
-      id: `${hex}-${index}`,
-      label: `Color ${index + 1}`,
-      value: normalizeHex(hex)
-    }))
-    setDetectedColors(colors)
+  .primary-button,
+  .secondary-button,
+  .action-button {
+    width: 100%;
   }
 
-  const detectPalette = () => {
-    if (!imageSrc) {
-      setError('Primero selecciona una imagen para analizarla.')
-      return
-    }
-
-    setIsProcessing(true)
-    setError('')
-
-    const image = new Image()
-    image.onload = () => {
-      const palette = buildPaletteFromImage(image, 6)
-      setImageInfo({ width: image.width, height: image.height })
-      setDetectedColors(
-        palette.map((hex, index) => ({
-          id: `${hex}-${index}`,
-          label: `Color ${index + 1}`,
-          value: normalizeHex(hex)
-        }))
-      )
-      setSvgMarkup('')
-      setIsProcessing(false)
-    }
-
-    image.onerror = () => {
-      setError('La imagen no pudo cargarse para analizar los colores.')
-      setIsProcessing(false)
-    }
-
-    image.src = imageSrc
+  .controls-grid {
+    grid-template-columns: 1fr;
   }
-
-  const updateColorValue = (id, nextValue) => {
-    const normalized = normalizeHex(nextValue)
-    setDetectedColors((current) =>
-      current.map((color) => (color.id === id ? { ...color, value: normalized } : color))
-    )
-  }
-
-  const updateColorByRgb = (id, channel, numericValue) => {
-    setDetectedColors((current) =>
-      current.map((color) => {
-        if (color.id !== id) return color
-
-        const { r, g, b } = hexToRgb(color.value)
-        const nextRgb = { r, g, b, [channel]: clamp(Number(numericValue) || 0, 0, 255) }
-
-        return {
-          ...color,
-          value: rgbToHex(nextRgb.r, nextRgb.g, nextRgb.b)
-        }
-      })
-    )
-  }
-
-  const vectorizeImage = async () => {
-    if (!imageSrc || !detectedColors.length) {
-      setError('Debes detectar una paleta antes de vectorizar.')
-      return
-    }
-
-    setIsProcessing(true)
-    setError('')
-
-    try {
-      const palette = detectedColors.map((color) => color.value)
-      const svg = await vectorizeSvgFromImage(imageSrc, palette, {
-        cellSize: gridSize,
-        preserveTransparency,
-        backgroundColor
-      })
-      setSvgMarkup(svg)
-    } catch (err) {
-      setError(err?.message || 'No se pudo generar el SVG.')
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  const downloadSvg = () => {
-    if (!svgMarkup) return
-    const blob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${fileName || 'vectorized-image'}.svg`
-    link.click()
-    URL.revokeObjectURL(url)
-  }
-
-  const downloadPng = async () => {
-    if (!svgMarkup) return
-    try {
-      await exportSvgToPng(svgMarkup, fileName || 'vectorized-image')
-    } catch {
-      setError('No se pudo exportar el PNG.')
-    }
-  }
-
-  const features = [
-    { title: 'Fast conversion', text: 'Vectorize logos, icons and illustrations with a precise color-driven workflow.' },
-    { title: 'Editable palette', text: 'Accept the detected palette or modify each color manually with RGB controls.' },
-    { title: 'Export ready', text: 'Download SVG for web and PNG for presentations or sharing.' }
-  ]
-
-  return (
-    <div className="app-shell">
-      <div className="top-glow" />
-
-      <div className="container">
-        <header className="hero">
-          <div className="brand-row">
-            <div className="brand-mark">S</div>
-            <span>SVG Forge</span>
-          </div>
-
-          <div className="hero-grid">
-            <div className="hero-copy">
-              <p className="eyebrow">Professional image to SVG workflow</p>
-              <h1>Convert any image to a clean SVG with color control.</h1>
-              <p className="subhead">
-                Upload a file, detect the dominant colors, accept or edit the palette, and export a polished vector version in seconds.
-              </p>
-
-              <div className="hero-actions">
-                <button type="button" onClick={() => inputRef.current?.click()} className="primary-button">
-                  Upload image
-                </button>
-                <button type="button" onClick={detectPalette} disabled={!imageSrc || isProcessing} className="secondary-button">
-                  Detect colors
-                </button>
-              </div>
-            </div>
-
-            <div className="stats-panel">
-              <div className="stats-item">
-                <span className="stats-label">Supported</span>
-                <strong>PNG / JPG / WEBP / GIF / BMP / ICO</strong>
-              </div>
-              <div className="stats-item">
-                <span className="stats-label">Output</span>
-                <strong>SVG + PNG</strong>
-              </div>
-              <div className="stats-item">
-                <span className="stats-label">Workflow</span>
-                <strong>Detect → Edit → Export</strong>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <section className="feature-grid">
-          {features.map((feature) => (
-            <article key={feature.title} className="feature-card">
-              <div className="feature-icon">◇</div>
-              <h3>{feature.title}</h3>
-              <p>{feature.text}</p>
-            </article>
-          ))}
-        </section>
-
-        <div className="preset-row">
-          {Object.entries(palettePresets).map(([key, colors]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => applyPreset(key)}
-              className={`preset-pill ${selectedPreset === key ? 'active' : ''}`}
-            >
-              <span className="preset-swatches">
-                {colors.slice(0, 3).map((color) => (
-                  <span key={color} className="preset-swatch" style={{ backgroundColor: color }} />
-                ))}
-              </span>
-              {key}
-            </button>
-          ))}
-        </div>
-
-        <main className="workspace-grid">
-          <section className="panel panel-main">
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">Source</p>
-                <h2>Upload and preview</h2>
-              </div>
-              <span className="badge">{fileStats}</span>
-            </div>
-
-            <div className="upload-box" onClick={() => inputRef.current?.click()}>
-              <input ref={inputRef} type="file" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.ico" onChange={handleFileSelection} />
-
-              {imageSrc ? (
-                <div className="upload-preview-wrap">
-                  <img src={imageSrc} alt="Original" className="upload-preview" />
-                  <p>{fileName || 'Archivo cargado'}</p>
-                </div>
-              ) : (
-                <div className="upload-empty-state">
-                  <div className="upload-icon">⤴</div>
-                  <p>Drop an image here or browse</p>
-                  <span>PNG, JPG, WEBP, GIF, BMP or ICO</span>
-                </div>
-              )}
-            </div>
-
-            <div className="action-row">
-              <button type="button" onClick={detectPalette} disabled={!imageSrc || isProcessing} className="action-button primary">
-                {isProcessing ? 'Processing...' : 'Detect colors'}
-              </button>
-              <button type="button" onClick={vectorizeImage} disabled={!imageSrc || !detectedColors.length || isProcessing} className="action-button success">
-                Accept & vectorize
-              </button>
-              <button type="button" onClick={downloadSvg} disabled={!svgMarkup} className="action-button secondary">
-                Download SVG
-              </button>
-              <button type="button" onClick={downloadPng} disabled={!svgMarkup} className="action-button neutral">
-                Export PNG
-              </button>
-            </div>
-
-            <div className="controls-grid">
-              <label className="control-card">
-                <span className="control-label">Cell size</span>
-                <input type="range" min="8" max="28" step="2" value={gridSize} onChange={(e) => setGridSize(Number(e.target.value))} />
-                <strong>{gridSize}px</strong>
-              </label>
-
-              <label className="control-card">
-                <span className="control-label">Background</span>
-                <div className="color-inline">
-                  <input type="color" value={backgroundColor} onChange={(e) => setBackgroundColor(e.target.value)} />
-                  <span>{backgroundColor}</span>
-                </div>
-              </label>
-
-              <label className="control-card">
-                <span className="control-label">Transparency</span>
-                <button
-                  type="button"
-                  onClick={() => setPreserveTransparency((prev) => !prev)}
-                  className={`toggle-button ${preserveTransparency ? 'on' : ''}`}
-                >
-                  <span>{preserveTransparency ? 'Enabled' : 'Disabled'}</span>
-                  <span className="toggle-indicator">{preserveTransparency ? '✓' : '○'}</span>
-                </button>
-              </label>
-            </div>
-
-            {error && <div className="error-box">{error}</div>}
-          </section>
-
-          <aside className="panel panel-side">
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">Palette</p>
-                <h2>Detected colors</h2>
-              </div>
-              <span className="badge accent">{detectedColors.length ? 'Ready' : 'Empty'}</span>
-            </div>
-
-            <div className="palette-list">
-              {detectedColors.length ? (
-                detectedColors.map((color) => {
-                  const rgb = hexToRgb(color.value)
-                  return (
-                    <div key={color.id} className="color-card">
-                      <div className="color-header">
-                        <div className="color-sample" style={{ backgroundColor: color.value }} />
-                        <div>
-                          <p>{color.label}</p>
-                          <small>{color.value}</small>
-                        </div>
-                        <input type="color" value={color.value} onChange={(e) => updateColorValue(color.id, e.target.value)} />
-                      </div>
-
-                      <div className="rgb-grid">
-                        {['r', 'g', 'b'].map((channel) => (
-                          <label key={channel} className="rgb-slider">
-                            <div className="rgb-meta">
-                              <span>{channel.toUpperCase()}</span>
-                              <strong>{rgb[channel]}</strong>
-                            </div>
-                            <input
-                              type="range"
-                              min="0"
-                              max="255"
-                              value={rgb[channel]}
-                              onChange={(e) => updateColorByRgb(color.id, channel, e.target.value)}
-                            />
-                          </label>
-                        ))}
-                      </div>
-
-                      <input type="text" value={color.value} onChange={(e) => updateColorValue(color.id, e.target.value)} className="hex-input" />
-                    </div>
-                  )
-                })
-              ) : (
-                <div className="empty-state-card">Detect a source image to generate a palette.</div>
-              )}
-            </div>
-          </aside>
-        </main>
-
-        <section className="panel preview-panel">
-          <div className="panel-header preview-header">
-            <div>
-              <p className="panel-kicker">Preview</p>
-              <h2>Original vs vector output</h2>
-            </div>
-            <div className="preview-tags">
-              <span>Original</span>
-              <span className="tag-highlight">SVG</span>
-            </div>
-          </div>
-
-          <div className="preview-grid">
-            <div className="preview-card">
-              <div className="preview-label-row">
-                <span>Original</span>
-                <strong>{fileStats}</strong>
-              </div>
-              {imageSrc ? (
-                <img src={imageSrc} alt="Original" className="preview-image" />
-              ) : (
-                <div className="preview-placeholder">No image loaded</div>
-              )}
-            </div>
-
-            <div className="preview-card">
-              <div className="preview-label-row">
-                <span>Vector</span>
-                <strong>SVG</strong>
-              </div>
-              {svgMarkup ? (
-                <div className="svg-container" dangerouslySetInnerHTML={{ __html: svgMarkup }} />
-              ) : (
-                <div className="preview-placeholder">Your vector output will appear here.</div>
-              )}
-            </div>
-          </div>
-        </section>
-      </div>
-    </div>
-  )
 }
 

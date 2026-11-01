@@ -1,40 +1,4 @@
-# SVG Converter Pro
-
-Aplicación web para convertir imágenes a SVG con detección automática de colores, edición visual de paleta, exportación SVG/PNG y preparación para despliegue en Cloudflare Pages.
-
-## Stack
-
-- React
-- Vite
-- Tailwind CSS
-
-## Scripts
-
-```bash
-npm install
-npm run dev
-npm run build
-npm run preview
-```
-
-## Deploy en Cloudflare Pages
-
-1. Conecta tu repositorio en Cloudflare Pages.
-2. Usa estas opciones:
-   - Framework preset: Vite
-   - Build command: `npm run build`
-   - Build output directory: `dist`
-3. La app ya incluye el archivo `public/_redirects` para manejar rutas de SPA.
-
-## Características
-
-- Subida de imágenes PNG, JPG, WEBP, GIF, BMP, ICO.
-- Detección automática de colores dominantes.
-- Paletas predefinidas y edición manual de cada color.
-- Ajustes de fondo, transparencia y tamaño de celda.
-- Vista previa original vs. SVG.
-- Descarga de archivos SVG y PNG.
-
-## Notas
-
-La vectorización es una aproximación por bloques de color pensada para uso rápido y para prototipos visuales. Si quieres un trazado más avanzado, puede añadirse un motor de vectorización de mayor precisión en una siguiente iteración.
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect width="64" height="64" rx="16" fill="#0F172A"/>
+  <path d="M16 35.5V19.5h8.5c8.5 0 12.6 4.2 12.6 10.3 0 6.1-4.1 10.2-12.6 10.2H16Zm7.7-6.2h1.8c3.4 0 5-1.5 5-4.1s-1.6-4.1-5-4.1h-1.8v8.2Zm19.3 6.2V19.5h7.2v16h-7.2Zm-8 0V19.5h7.2v16h-7.2Z" fill="#22D3EE"/>
+</svg>
