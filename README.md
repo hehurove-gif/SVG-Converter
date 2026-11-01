@@ -29,13 +29,14 @@ El fallback de SPA se maneja con `not_found_handling: "single-page-application"`
 
 ## Características
 
-- Subida de imágenes PNG, JPG, WEBP, GIF, BMP, ICO.
-- Detección automática de colores dominantes.
-- Paletas predefinidas y edición manual de cada color.
-- Ajustes de fondo, transparencia y tamaño de celda.
-- Vista previa original vs. SVG.
-- Descarga de archivos SVG y PNG.
+- Sube PNG, JPG, WEBP, GIF, BMP o ICO (también arrastrando la imagen).
+- Divide la imagen por sus líneas y colores en zonas vectoriales reales (contornos trazados, no cuadrícula).
+- Clic en cualquier zona: un globo con flecha muestra su código de color y permite editarlo.
+- Dos alcances al cambiar un color: todas las zonas del mismo color, o solo la zona pulsada.
+- Eliminar fondo automáticamente, o eliminar cualquier zona/color con un clic. Deshacer y restaurar.
+- Ajustes de colores, detalle y suavizado; paletas rápidas.
+- Descarga SVG y PNG con transparencia.
 
 ## Notas
 
-La vectorización es una aproximación por bloques de color pensada para uso rápido y para prototipos visuales. Si quieres un trazado más avanzado, puede añadirse un motor de vectorización de mayor precisión en una siguiente iteración.
+Los colores se agrupan con una paleta dominante y la imagen se divide en zonas conectadas de cada color. Las imágenes con degradados o fotografías generan muchas zonas; funciona mejor con logos, íconos e ilustraciones.

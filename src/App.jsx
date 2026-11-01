@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { clamp, hexToRgb, isValidHex, normalizeHex } from './lib/color.js'
+import { buildSvg, detectBackground, loadImage, segmentImage } from './lib/segment.js'
 
-const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/x-icon']
+const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/x-icon', 'image/vnd.microsoft.icon']
 
 const palettePresets = {
   vivid: ['#0F172A', '#2563EB', '#F59E0B', '#10B981', '#EF4444', '#F8FAFC'],
@@ -9,469 +11,44 @@ const palettePresets = {
   neon: ['#22D3EE', '#A78BFA', '#F472B6', '#FACC15', '#34D399', '#0F172A']
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value))
-}
-
-// Acepta "#RGB", "#RRGGBB" (con o sin "#"). Devuelve `fallback` si no es válido.
-function normalizeHex(hex, fallback = '#000000') {
-  const clean = String(hex ?? '')
-    .trim()
-    .replace(/^#/, '')
-    .replace(/[^0-9a-fA-F]/g, '')
-
-  if (clean.length === 3) {
-    return `#${clean.split('').map((char) => char + char).join('')}`.toUpperCase()
-  }
-
-  if (clean.length === 6) {
-    return `#${clean}`.toUpperCase()
-  }
-
-  return fallback
-}
-
-function isValidHex(value) {
-  return /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(value ?? '').trim())
-}
-
-function hexToRgb(hex) {
-  const value = normalizeHex(hex).replace('#', '')
-  const number = Number.parseInt(value, 16)
-  return { r: (number >> 16) & 255, g: (number >> 8) & 255, b: number & 255 }
-}
-
-function rgbToHex(r, g, b) {
-  const toHex = (value) => clamp(Math.round(value), 0, 255).toString(16).padStart(2, '0')
-  return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase()
-}
-
-function colorDistance(a, b) {
-  return Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2)
-}
-
-function nearestIndex(rgb, candidates) {
-  let best = 0
-  let min = Number.POSITIVE_INFINITY
-
-  for (let i = 0; i < candidates.length; i += 1) {
-    const distance = colorDistance(rgb, candidates[i])
-    if (distance < min) {
-      min = distance
-      best = i
-    }
-  }
-
-  return best
-}
-
-function readableText(hex) {
-  const { r, g, b } = hexToRgb(hex)
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-  return luminance > 0.6 ? '#0F172A' : '#FFFFFF'
-}
-
-function formatPercent(value) {
-  if (value > 0 && value < 1) return '<1'
-  return String(Math.round(value))
-}
-
-// ---------- Carga y caché de imágenes ----------
-
-let imageCache = { src: '', promise: null }
-
-function loadImage(src) {
-  if (imageCache.src === src && imageCache.promise) return imageCache.promise
-
-  const promise = new Promise((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => resolve(image)
-    image.onerror = () => reject(new Error('No se pudo leer la imagen.'))
-    image.src = src
-  })
-
-  imageCache = { src, promise }
-  promise.catch(() => {
-    if (imageCache.promise === promise) imageCache = { src: '', promise: null }
-  })
-  return promise
-}
-
-function readPixels(image, maxSize) {
-  const scale = Math.min(1, maxSize / Math.max(image.width, image.height))
-  const width = Math.max(1, Math.round(image.width * scale))
-  const height = Math.max(1, Math.round(image.height * scale))
-
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) return null
-
-  ctx.drawImage(image, 0, 0, width, height)
-  return { width, height, data: ctx.getImageData(0, 0, width, height).data }
-}
-
-// ---------- Detección de paleta ----------
-
-// Agrupa los píxeles en cubos, promedia el color REAL de cada cubo y refina
-// los centros con unas iteraciones tipo k-means para obtener colores fieles.
-function buildPaletteFromImage(image, maxColors = 6) {
-  const pixels = readPixels(image, 200)
-  if (!pixels) return null
-
-  const { data } = pixels
-  const buckets = new Map()
-  let total = 0
-
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 30) continue
-
-    const r = data[i]
-    const g = data[i + 1]
-    const b = data[i + 2]
-    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
-    const bucket = buckets.get(key) || { count: 0, r: 0, g: 0, b: 0 }
-
-    bucket.count += 1
-    bucket.r += r
-    bucket.g += g
-    bucket.b += b
-    buckets.set(key, bucket)
-    total += 1
-  }
-
-  if (!total) return null
-
-  const entries = [...buckets.values()]
-    .map((bucket) => ({
-      count: bucket.count,
-      r: bucket.r / bucket.count,
-      g: bucket.g / bucket.count,
-      b: bucket.b / bucket.count
-    }))
-    .sort((a, b) => b.count - a.count)
-
-  const MIN_DISTANCE = 42
-  let centers = []
-
-  for (const entry of entries) {
-    if (centers.length >= maxColors) break
-    if (centers.every((center) => colorDistance(center, entry) >= MIN_DISTANCE)) {
-      centers.push({ r: entry.r, g: entry.g, b: entry.b })
-    }
-  }
-
-  let weights = []
-
-  for (let iteration = 0; iteration < 4; iteration += 1) {
-    const sums = centers.map(() => ({ r: 0, g: 0, b: 0, w: 0 }))
-
-    for (const entry of entries) {
-      const sum = sums[nearestIndex(entry, centers)]
-      sum.r += entry.r * entry.count
-      sum.g += entry.g * entry.count
-      sum.b += entry.b * entry.count
-      sum.w += entry.count
-    }
-
-    weights = sums.map((sum) => sum.w)
-    centers = sums.map((sum, index) =>
-      sum.w ? { r: sum.r / sum.w, g: sum.g / sum.w, b: sum.b / sum.w } : centers[index]
-    )
-  }
-
-  let result = centers.map((center, index) => ({ hex: rgbToHex(center.r, center.g, center.b), weight: weights[index] }))
-  result.sort((a, b) => b.weight - a.weight)
-
-  // Descarta grupos diminutos (ruido de antialiasing), conservando al menos 2.
-  const significant = result.filter((item) => item.weight / total >= 0.004)
-  if (significant.length >= 2) result = significant
-
-  // Evita colores duplicados tras el redondeo.
-  return [...new Set(result.map((item) => item.hex))]
-}
-
-// ---------- Mapeo color -> zona de la imagen ----------
-
-function describeRegion(stat, width, height, coverage, edgeOpaque) {
-  const bboxW = (stat.maxX - stat.minX + 1) / width
-  const bboxH = (stat.maxY - stat.minY + 1) / height
-
-  if (edgeOpaque >= 12 && stat.edge / edgeOpaque > 0.6 && coverage > 8) return 'Background / edges'
-  if (bboxW > 0.7 && bboxH > 0.7) return 'Spread across the image'
-
-  const nx = stat.sx / stat.count / width
-  const ny = stat.sy / stat.count / height
-  const vertical = ny < 0.36 ? 'top' : ny > 0.64 ? 'bottom' : 'middle'
-  const horizontal = nx < 0.36 ? 'left' : nx > 0.64 ? 'right' : 'center'
-  const cap = (text) => text.charAt(0).toUpperCase() + text.slice(1)
-
-  if (vertical === 'middle' && horizontal === 'center') return 'Center'
-  if (vertical === 'middle') return `${cap(horizontal)} side`
-  if (horizontal === 'center') return cap(vertical)
-  return `${cap(vertical)} ${horizontal}`
-}
-
-// Asigna cada píxel a su color más cercano (usando los colores ORIGINALES detectados)
-// y genera, por color: cobertura, posición, marcador y una máscara que resalta su zona.
-function analyzeRegions(image, sources) {
-  const pixels = readPixels(image, 220)
-  if (!pixels || !sources.length) return []
-
-  const { width, height, data } = pixels
-  const rgbs = sources.map((hex) => hexToRgb(hex))
-  const assign = new Int16Array(width * height).fill(-1)
-  const stats = sources.map(() => ({ count: 0, sx: 0, sy: 0, minX: width, maxX: 0, minY: height, maxY: 0, edge: 0 }))
-  let opaque = 0
-  let edgeOpaque = 0
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = y * width + x
-      if (data[i * 4 + 3] < 30) continue
-
-      const index = nearestIndex({ r: data[i * 4], g: data[i * 4 + 1], b: data[i * 4 + 2] }, rgbs)
-      const stat = stats[index]
-
-      assign[i] = index
-      stat.count += 1
-      stat.sx += x
-      stat.sy += y
-      stat.minX = Math.min(stat.minX, x)
-      stat.maxX = Math.max(stat.maxX, x)
-      stat.minY = Math.min(stat.minY, y)
-      stat.maxY = Math.max(stat.maxY, y)
-      opaque += 1
-
-      if (x < 2 || y < 2 || x >= width - 2 || y >= height - 2) {
-        stat.edge += 1
-        edgeOpaque += 1
-      }
-    }
-  }
-
-  // Punto de la región más cercano a su centroide (para colocar el marcador numerado).
-  const anchors = stats.map((stat) => ({
-    cx: stat.count ? stat.sx / stat.count : 0,
-    cy: stat.count ? stat.sy / stat.count : 0,
-    best: Number.POSITIVE_INFINITY,
-    x: 0,
-    y: 0
-  }))
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = assign[y * width + x]
-      if (index < 0) continue
-
-      const anchor = anchors[index]
-      const distance = (x - anchor.cx) ** 2 + (y - anchor.cy) ** 2
-      if (distance < anchor.best) {
-        anchor.best = distance
-        anchor.x = x
-        anchor.y = y
-      }
-    }
-  }
-
-  return stats.map((stat, index) => {
-    if (!stat.count) {
-      return { coverage: 0, marker: null, description: 'Not found in the image', mask: null }
-    }
-
-    const coverage = opaque ? (stat.count / opaque) * 100 : 0
-    const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
-
-    const ctx = canvas.getContext('2d')
-    let mask = null
-
-    if (ctx) {
-      const imageData = ctx.createImageData(width, height)
-      const out = imageData.data
-
-      for (let y = 0; y < height; y += 1) {
-        for (let x = 0; x < width; x += 1) {
-          const i = y * width + x
-          const o = i * 4
-
-          if (assign[i] !== index) {
-            out[o] = 2
-            out[o + 1] = 8
-            out[o + 2] = 23
-            out[o + 3] = 200
-            continue
-          }
-
-          const isBoundary =
-            (x > 0 && assign[i - 1] !== index) ||
-            (x < width - 1 && assign[i + 1] !== index) ||
-            (y > 0 && assign[i - width] !== index) ||
-            (y < height - 1 && assign[i + width] !== index)
-
-          if (isBoundary) {
-            out[o] = 34
-            out[o + 1] = 211
-            out[o + 2] = 238
-            out[o + 3] = 235
-          }
-        }
-      }
-
-      ctx.putImageData(imageData, 0, 0)
-      mask = canvas.toDataURL('image/png')
-    }
-
-    return {
-      coverage,
-      marker: { x: ((anchors[index].x + 0.5) / width) * 100, y: ((anchors[index].y + 0.5) / height) * 100 },
-      description: describeRegion(stat, width, height, coverage, edgeOpaque),
-      mask
-    }
-  })
-}
-
-// ---------- Vectorización ----------
-
-let pixelCache = { src: '', pixels: null }
-
-async function getVectorPixels(imageSrc) {
-  if (pixelCache.src === imageSrc && pixelCache.pixels) return pixelCache.pixels
-
-  const image = await loadImage(imageSrc)
-  const maxWidth = 900
-  const scale = Math.min(1, maxWidth / image.width)
-  const width = Math.max(1, Math.round(image.width * scale))
-  const height = Math.max(1, Math.round(image.height * scale))
-
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) throw new Error('No se pudo preparar el canvas para vectorizar.')
-
-  ctx.drawImage(image, 0, 0, width, height)
-  const pixels = { width, height, data: ctx.getImageData(0, 0, width, height).data }
-  pixelCache = { src: imageSrc, pixels }
-  return pixels
-}
-
-// `palette` = [{ source, value }]: los píxeles se asignan según `source` (color original
-// detectado) y se pintan con `value` (color editado). Así editar un color recolorea SU zona.
-async function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
-  const { width, height, data } = await getVectorPixels(imageSrc)
-  const cellSize = clamp(Number(options.cellSize) || 14, 8, 30)
-  const backgroundColor = normalizeHex(options.backgroundColor || '#FFFFFF', '#FFFFFF')
-  const preserveTransparency = Boolean(options.preserveTransparency)
-  const sources = palette.map((color) => hexToRgb(color.source))
-  const fills = palette.map((color) => normalizeHex(color.value))
-  const rects = []
-
-  for (let y = 0; y < height; y += cellSize) {
-    let run = null
-
-    const flush = () => {
-      if (!run) return
-      const opacityAttr = run.opacity < 1 ? ` fill-opacity="${run.opacity}"` : ''
-      rects.push(`<rect x="${run.x}" y="${y}" width="${run.count * cellSize + 1}" height="${cellSize + 1}" fill="${fills[run.index]}"${opacityAttr}/>`)
-      run = null
-    }
-
-    for (let x = 0; x < width; x += cellSize) {
-      let totalR = 0
-      let totalG = 0
-      let totalB = 0
-      let totalA = 0
-      let count = 0
-
-      for (let dy = 0; dy < cellSize; dy += 1) {
-        const py = y + dy
-        if (py >= height) continue
-
-        for (let dx = 0; dx < cellSize; dx += 1) {
-          const px = x + dx
-          if (px >= width) continue
-
-          const index = (py * width + px) * 4
-          const alpha = data[index + 3]
-          if (alpha < 12) continue
-
-          totalR += data[index]
-          totalG += data[index + 1]
-          totalB += data[index + 2]
-          totalA += alpha
-          count += 1
-        }
-      }
-
-      if (count === 0) {
-        flush()
-        continue
-      }
-
-      const average = { r: totalR / count, g: totalG / count, b: totalB / count }
-      const index = nearestIndex(average, sources)
-      const opacity = preserveTransparency ? Math.round(clamp(totalA / count / 255, 0.2, 1) * 10) / 10 : 1
-
-      if (run && run.index === index && run.opacity === opacity) {
-        run.count += 1
-      } else {
-        flush()
-        run = { x, index, opacity, count: 1 }
-      }
-    }
-
-    flush()
-  }
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="${backgroundColor}"/>${rects.join('')}</svg>`
+const DETAIL_LABELS = ['Mínimo', 'Bajo', 'Medio', 'Alto', 'Máximo']
+const SMOOTH_LABELS = ['Sin suavizar', 'Suave', 'Más suave', 'Muy suave']
+const CALLOUT_WIDTH = 252
+
+function initialEdit(seg) {
+  const fills = {}
+  for (const region of seg.regions) fills[region.id] = seg.palette[region.label]
+  return { fills, hidden: {} }
 }
 
 async function exportSvgToPng(svgString, filename) {
-  const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
-  const url = URL.createObjectURL(svgBlob)
+  const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
 
   try {
     const img = new Image()
-    const loaded = new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       img.onload = resolve
       img.onerror = reject
       img.src = url
     })
 
-    await loaded
-
     const canvas = document.createElement('canvas')
-    const width = img.naturalWidth || 1200
-    const height = img.naturalHeight || 1200
-    canvas.width = width
-    canvas.height = height
+    canvas.width = img.naturalWidth || 1200
+    canvas.height = img.naturalHeight || 1200
 
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Canvas no disponible')
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
 
-    ctx.fillStyle = '#FFFFFF'
-    ctx.fillRect(0, 0, width, height)
-    ctx.drawImage(img, 0, 0, width, height)
-
-    const pngUrl = canvas.toDataURL('image/png')
     const link = document.createElement('a')
-    link.href = pngUrl
-    link.download = `${filename || 'vectorized-image'}.png`
+    link.href = canvas.toDataURL('image/png')
+    link.download = `${filename || 'imagen-vectorizada'}.png`
     link.click()
-
+  } finally {
     URL.revokeObjectURL(url)
-  } catch (error) {
-    URL.revokeObjectURL(url)
-    throw error
   }
 }
-
-// ---------- Componentes auxiliares ----------
 
 function HexInput({ value, onCommit }) {
   const [draft, setDraft] = useState(value)
@@ -487,7 +64,7 @@ function HexInput({ value, onCommit }) {
       value={draft}
       maxLength={7}
       spellCheck={false}
-      aria-label="Hex color"
+      aria-label="Código de color hexadecimal"
       onChange={(event) => {
         const next = event.target.value
         setDraft(next)
@@ -501,141 +78,265 @@ function HexInput({ value, onCommit }) {
   )
 }
 
-// Contenedor con proporción fija para alinear máscara y marcadores sobre la imagen/SVG.
-function RegionStage({ ratio, maxHeight = 420, colors, regions, activeId, onHover, showMarkers = true, children }) {
-  const safeRatio = ratio > 0 ? ratio : 1
-  const activeIndex = colors.findIndex((color) => color.id === activeId)
-  const mask = activeIndex >= 0 ? regions[activeIndex]?.mask : null
+// Globo con flecha que apunta al lugar exacto donde se hizo clic.
+function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onClose }) {
+  const { x, y, w } = selected
+  const left = clamp(x - CALLOUT_WIDTH / 2, 6, Math.max(6, w - CALLOUT_WIDTH - 6))
+  const arrowX = clamp(x - left, 20, CALLOUT_WIDTH - 20)
+  const above = y > 215
+  const rgb = hexToRgb(color)
 
   return (
-    <div
-      className="region-stage"
-      style={{ aspectRatio: String(safeRatio), width: `min(100%, ${Math.round(maxHeight * safeRatio)}px)` }}
-    >
-      {children}
-      {mask && <img src={mask} alt="" className="region-mask" />}
-      {showMarkers &&
-        regions.map((region, index) => {
-          const color = colors[index]
-          if (!region?.marker || !color) return null
+    <>
+      <span className="click-dot" style={{ left: x, top: y, backgroundColor: color }} />
+      <div
+        className={`callout ${above ? 'above' : 'below'}`}
+        style={{ left, top: above ? y - 14 : y + 14, width: CALLOUT_WIDTH, '--arrow-x': `${arrowX}px` }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="callout-head">
+          <label className="callout-swatch" style={{ backgroundColor: color }} title="Cambiar color">
+            <input type="color" value={color} onChange={(event) => onColor(normalizeHex(event.target.value))} />
+          </label>
+          <div className="callout-code">
+            <strong>{color}</strong>
+            <small>
+              rgb({rgb.r}, {rgb.g}, {rgb.b})
+            </small>
+          </div>
+          <button type="button" className="callout-close" onClick={onClose} aria-label="Cerrar">
+            ✕
+          </button>
+        </div>
 
-          return (
-            <button
-              key={color.id}
-              type="button"
-              className={`region-marker ${color.id === activeId ? 'active' : ''}`}
-              style={{
-                left: `${region.marker.x}%`,
-                top: `${region.marker.y}%`,
-                backgroundColor: color.value,
-                color: readableText(color.value)
-              }}
-              title={`${color.label} · ${region.description}`}
-              onMouseEnter={() => onHover(color.id)}
-              onMouseLeave={() => onHover(null)}
-              onFocus={() => onHover(color.id)}
-              onBlur={() => onHover(null)}
-            >
-              {index + 1}
-            </button>
-          )
-        })}
-    </div>
+        <HexInput value={color} onCommit={onColor} />
+
+        <div className="segmented small" role="group" aria-label="Alcance del cambio">
+          <button type="button" className={mode === 'group' ? 'on' : ''} onClick={() => onMode('group')}>
+            Mismo color ({count})
+          </button>
+          <button type="button" className={mode === 'region' ? 'on' : ''} onClick={() => onMode('region')}>
+            Solo esta zona
+          </button>
+        </div>
+
+        <button type="button" className="callout-delete" onClick={onDelete}>
+          Eliminar {mode === 'group' && count > 1 ? `estas ${count} zonas` : 'esta zona'}
+        </button>
+      </div>
+    </>
   )
 }
 
 export default function App() {
   const inputRef = useRef(null)
+  const stageRef = useRef(null)
   const [imageSrc, setImageSrc] = useState('')
   const [fileName, setFileName] = useState('')
+  const [imageSize, setImageSize] = useState({ width: 0, height: 0 })
   const [error, setError] = useState('')
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [imageInfo, setImageInfo] = useState({ width: 0, height: 0 })
-  const [detectedColors, setDetectedColors] = useState([])
-  const [regions, setRegions] = useState([])
-  const [selectedPreset, setSelectedPreset] = useState('vivid')
-  const [svgMarkup, setSvgMarkup] = useState('')
-  const [backgroundColor, setBackgroundColor] = useState('#FFFFFF')
-  const [gridSize, setGridSize] = useState(14)
-  const [paletteSize, setPaletteSize] = useState(6)
-  const [preserveTransparency, setPreserveTransparency] = useState(true)
-  const [hoverId, setHoverId] = useState(null)
-  const [pinnedId, setPinnedId] = useState(null)
+  const [notice, setNotice] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [params, setParams] = useState({ colors: 8, detail: 3, smooth: 2 })
+  const [runId, setRunId] = useState(0)
+  const [seg, setSeg] = useState(null)
+  const [edit, setEdit] = useState({ fills: {}, hidden: {} })
+  const [history, setHistory] = useState([])
+  const [mode, setMode] = useState('group')
+  const [selected, setSelected] = useState(null)
+  const [hoverHex, setHoverHex] = useState(null)
+  const [selectedPreset, setSelectedPreset] = useState('')
 
-  const activeId = hoverId || pinnedId
-  const imageRatio = imageInfo.width && imageInfo.height ? imageInfo.width / imageInfo.height : 1
-  const sourceKey = detectedColors.map((color) => color.source).join('|')
-
-  const fileStats = useMemo(
-    () => (imageInfo.width ? `${imageInfo.width} × ${imageInfo.height}px` : 'No image'),
-    [imageInfo]
-  )
-
-  // Dimensiones de la imagen en cuanto se carga.
+  // Vectoriza automáticamente al subir la imagen o al cambiar los ajustes.
   useEffect(() => {
-    if (!imageSrc) {
-      setImageInfo({ width: 0, height: 0 })
-      return undefined
-    }
+    if (!imageSrc) return undefined
 
     let cancelled = false
-    loadImage(imageSrc)
-      .then((image) => {
-        if (!cancelled) setImageInfo({ width: image.width, height: image.height })
-      })
-      .catch(() => {
-        if (!cancelled) setError('No se pudo leer la imagen.')
-      })
+    setBusy(true)
+    setError('')
 
-    return () => {
-      cancelled = true
-    }
-  }, [imageSrc])
-
-  // Zona de la imagen que corresponde a cada color (según los colores originales detectados).
-  useEffect(() => {
-    if (!imageSrc || !sourceKey) {
-      setRegions([])
-      return undefined
-    }
-
-    let cancelled = false
-    loadImage(imageSrc)
-      .then((image) => {
-        if (!cancelled) setRegions(analyzeRegions(image, sourceKey.split('|')))
-      })
-      .catch(() => {
-        if (!cancelled) setRegions([])
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [imageSrc, sourceKey])
-
-  // Vista previa en vivo: se regenera sola al editar colores u opciones.
-  useEffect(() => {
-    if (!imageSrc || !detectedColors.length) return undefined
-
-    let cancelled = false
     const timer = setTimeout(async () => {
       try {
-        const svg = await vectorizeSvgFromImage(imageSrc, detectedColors, {
-          cellSize: gridSize,
-          preserveTransparency,
-          backgroundColor
-        })
-        if (!cancelled) setSvgMarkup(svg)
+        const image = await loadImage(imageSrc)
+        if (cancelled) return
+
+        const result = segmentImage(image, params)
+        if (cancelled) return
+
+        setImageSize({ width: image.width, height: image.height })
+        setSeg(result)
+        setEdit(initialEdit(result))
+        setHistory([])
+        setSelected(null)
+        setNotice(result.regions.length ? '' : 'No se encontraron zonas de color en la imagen.')
       } catch (err) {
-        if (!cancelled) setError(err?.message || 'No se pudo generar el SVG.')
+        if (!cancelled) setError(err?.message || 'No se pudo vectorizar la imagen.')
+      } finally {
+        if (!cancelled) setBusy(false)
       }
-    }, 120)
+    }, 250)
 
     return () => {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [imageSrc, detectedColors, gridSize, preserveTransparency, backgroundColor])
+  }, [imageSrc, params, runId])
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === 'Escape') setSelected(null)
+    }
+    const onResize = () => setSelected(null)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [])
+
+  const visibleRegions = useMemo(() => (seg ? seg.regions.filter((r) => !edit.hidden[r.id]) : []), [seg, edit.hidden])
+
+  // Colores actuales agrupados: todas las zonas con exactamente el mismo color.
+  const groups = useMemo(() => {
+    if (!seg) return []
+
+    const map = new Map()
+    let total = 0
+
+    for (const region of seg.regions) {
+      total += region.area
+      if (edit.hidden[region.id]) continue
+
+      const hex = edit.fills[region.id]
+      const group = map.get(hex) || { hex, area: 0, ids: [] }
+      group.area += region.area
+      group.ids.push(region.id)
+      map.set(hex, group)
+    }
+
+    return [...map.values()]
+      .sort((a, b) => b.area - a.area)
+      .map((group) => ({ ...group, percent: total ? (group.area / total) * 100 : 0 }))
+  }, [seg, edit])
+
+  const highlightIds = useMemo(() => {
+    const ids = new Set()
+    if (selected) selected.scope.forEach((id) => ids.add(id))
+    if (hoverHex) groups.find((g) => g.hex === hoverHex)?.ids.forEach((id) => ids.add(id))
+    return ids
+  }, [selected, hoverHex, groups])
+
+  const hiddenCount = Object.keys(edit.hidden).length
+  const selectedColor = selected ? edit.fills[selected.id] : null
+
+  const snapshot = () =>
+    setHistory((current) => {
+      const last = current[current.length - 1]
+      if (last && JSON.stringify(last) === JSON.stringify(edit)) return current
+      return [...current.slice(-40), edit]
+    })
+
+  const undo = () => {
+    const now = JSON.stringify(edit)
+    let index = history.length - 1
+    while (index >= 0 && JSON.stringify(history[index]) === now) index -= 1
+
+    if (index < 0) {
+      setHistory([])
+      return
+    }
+
+    setEdit(history[index])
+    setHistory(history.slice(0, index))
+    setSelected(null)
+  }
+
+  const resetAll = () => {
+    if (!seg) return
+    snapshot()
+    setEdit(initialEdit(seg))
+    setSelected(null)
+    setNotice('')
+    setSelectedPreset('')
+  }
+
+  const computeScope = (id, nextMode) => {
+    if (nextMode === 'region' || !seg) return [id]
+    const hex = edit.fills[id]
+    return seg.regions.filter((r) => !edit.hidden[r.id] && edit.fills[r.id] === hex).map((r) => r.id)
+  }
+
+  const selectRegion = (region, event) => {
+    event.stopPropagation()
+    const rect = stageRef.current?.getBoundingClientRect()
+    if (!rect) return
+
+    snapshot()
+    setSelected({
+      id: region.id,
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      w: rect.width,
+      scope: computeScope(region.id, mode)
+    })
+  }
+
+  const changeMode = (nextMode) => {
+    setMode(nextMode)
+    setSelected((current) => (current ? { ...current, scope: computeScope(current.id, nextMode) } : current))
+  }
+
+  const applyColor = (ids, hex) => {
+    setEdit((current) => {
+      const fills = { ...current.fills }
+      for (const id of ids) fills[id] = hex
+      return { ...current, fills }
+    })
+  }
+
+  const hideIds = (ids) => {
+    snapshot()
+    setEdit((current) => {
+      const hidden = { ...current.hidden }
+      for (const id of ids) hidden[id] = true
+      return { ...current, hidden }
+    })
+    setSelected(null)
+  }
+
+  const removeBackground = () => {
+    if (!seg) return
+
+    const ids = detectBackground(seg).filter((id) => !edit.hidden[id])
+    if (!ids.length) {
+      setNotice(
+        seg.transparentRatio > 0.05
+          ? 'La imagen ya tiene fondo transparente.'
+          : 'No detecté un fondo en los bordes. Haz clic en el fondo y elige «Eliminar».'
+      )
+      return
+    }
+
+    hideIds(ids)
+    setNotice('Fondo eliminado. Si quitó de más, usa «Deshacer».')
+  }
+
+  const applyPreset = (name) => {
+    if (!groups.length) return
+    snapshot()
+    setSelectedPreset(name)
+
+    const preset = palettePresets[name]
+    setEdit((current) => {
+      const fills = { ...current.fills }
+      groups.forEach((group, index) => {
+        for (const id of group.ids) fills[id] = normalizeHex(preset[index % preset.length])
+      })
+      return { ...current, fills }
+    })
+    setSelected(null)
+  }
 
   const loadFile = (file) => {
     if (!file) return
@@ -647,14 +348,13 @@ export default function App() {
 
     const reader = new FileReader()
     reader.onload = () => {
-      setImageSrc(String(reader.result))
+      setSeg(null)
+      setEdit({ fills: {}, hidden: {} })
+      setHistory([])
+      setSelected(null)
+      setNotice('')
       setFileName(file.name.replace(/\.[^/.]+$/, ''))
-      setDetectedColors([])
-      setRegions([])
-      setSvgMarkup('')
-      setHoverId(null)
-      setPinnedId(null)
-      setError('')
+      setImageSrc(String(reader.result))
     }
     reader.readAsDataURL(file)
   }
@@ -669,123 +369,39 @@ export default function App() {
     loadFile(event.dataTransfer?.files?.[0])
   }
 
-  const makeColors = (hexes) =>
-    hexes.map((hex, index) => {
-      const value = normalizeHex(hex)
-      return { id: `c${index}`, label: `Color ${index + 1}`, source: value, value }
-    })
-
-  const applyPreset = (presetName) => {
-    setSelectedPreset(presetName)
-    const preset = palettePresets[presetName]
-
-    if (detectedColors.length) {
-      // Recolorea cada zona detectada con el color equivalente del preset.
-      setDetectedColors((current) =>
-        current.map((color, index) => ({ ...color, value: normalizeHex(preset[index % preset.length]) }))
-      )
-      return
-    }
-
-    setDetectedColors(makeColors(preset))
-  }
-
-  const detectPalette = async () => {
-    if (!imageSrc) {
-      setError('Primero selecciona una imagen para analizarla.')
-      return
-    }
-
-    setIsProcessing(true)
-    setError('')
-
-    try {
-      const image = await loadImage(imageSrc)
-      const palette = buildPaletteFromImage(image, paletteSize) || [...palettePresets.vivid]
-      setImageInfo({ width: image.width, height: image.height })
-      setDetectedColors(makeColors(palette))
-      setPinnedId(null)
-    } catch {
-      setError('La imagen no pudo cargarse para analizar los colores.')
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  const updateColor = (id, patch) => {
-    setDetectedColors((current) => current.map((color) => (color.id === id ? { ...color, ...patch } : color)))
-  }
-
-  const updateColorValue = (id, nextValue) => {
-    updateColor(id, { value: normalizeHex(nextValue) })
-  }
-
-  const updateColorByRgb = (id, channel, numericValue) => {
-    setDetectedColors((current) =>
-      current.map((color) => {
-        if (color.id !== id) return color
-
-        const { r, g, b } = hexToRgb(color.value)
-        const nextRgb = { r, g, b, [channel]: clamp(Number(numericValue) || 0, 0, 255) }
-
-        return { ...color, value: rgbToHex(nextRgb.r, nextRgb.g, nextRgb.b) }
-      })
-    )
-  }
-
-  const resetColors = () => {
-    setDetectedColors((current) => current.map((color) => ({ ...color, value: color.source })))
-  }
-
-  const vectorizeImage = async () => {
-    if (!imageSrc || !detectedColors.length) {
-      setError('Debes detectar una paleta antes de vectorizar.')
-      return
-    }
-
-    setIsProcessing(true)
-    setError('')
-
-    try {
-      const svg = await vectorizeSvgFromImage(imageSrc, detectedColors, {
-        cellSize: gridSize,
-        preserveTransparency,
-        backgroundColor
-      })
-      setSvgMarkup(svg)
-    } catch (err) {
-      setError(err?.message || 'No se pudo generar el SVG.')
-    } finally {
-      setIsProcessing(false)
-    }
-  }
+  const currentSvg = () => (seg ? buildSvg(seg, edit.fills, edit.hidden, imageSize) : '')
 
   const downloadSvg = () => {
-    if (!svgMarkup) return
-    const blob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
+    const svg = currentSvg()
+    if (!svg) return
+
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
     const link = document.createElement('a')
     link.href = url
-    link.download = `${fileName || 'vectorized-image'}.svg`
+    link.download = `${fileName || 'imagen-vectorizada'}.svg`
     link.click()
     URL.revokeObjectURL(url)
   }
 
   const downloadPng = async () => {
-    if (!svgMarkup) return
+    const svg = currentSvg()
+    if (!svg) return
+
     try {
-      await exportSvgToPng(svgMarkup, fileName || 'vectorized-image')
+      await exportSvgToPng(svg, fileName || 'imagen-vectorizada')
     } catch {
       setError('No se pudo exportar el PNG.')
     }
   }
 
-  const stageProps = { colors: detectedColors, regions, activeId, onHover: setHoverId }
+  const setParam = (key, value) => setParams((current) => ({ ...current, [key]: value }))
+  const ratio = seg ? seg.width / seg.height : 1
+  const ready = Boolean(seg && seg.regions.length)
 
   const features = [
-    { title: 'Fast conversion', text: 'Vectorize logos, icons and illustrations with a precise color-driven workflow.' },
-    { title: 'Editable palette', text: 'Accept the detected palette or modify each color manually with RGB controls.' },
-    { title: 'Export ready', text: 'Download SVG for web and PNG for presentations or sharing.' }
+    { title: 'Zonas reales', text: 'La imagen se divide por sus líneas y colores en zonas vectoriales que puedes pulsar.' },
+    { title: 'Bote de pintura', text: 'Haz clic en una zona, mira su código de color y cámbialo ahí mismo, en una zona o en todas las del mismo color.' },
+    { title: 'Listo para exportar', text: 'Elimina el fondo y descarga un SVG limpio, o un PNG transparente.' }
   ]
 
   return (
@@ -793,7 +409,7 @@ export default function App() {
       <div className="top-glow" />
 
       <div className="container">
-        <header className="hero">
+        <header className="hero compact">
           <div className="brand-row">
             <div className="brand-mark">S</div>
             <span>SVG Forge</span>
@@ -801,38 +417,254 @@ export default function App() {
 
           <div className="hero-grid">
             <div className="hero-copy">
-              <p className="eyebrow">Professional image to SVG workflow</p>
-              <h1>Convert any image to a clean SVG with color control.</h1>
+              <p className="eyebrow">De imagen a SVG, con control total del color</p>
+              <h1>Vectoriza, quita el fondo y repinta cada zona.</h1>
               <p className="subhead">
-                Upload a file, detect the dominant colors, accept or edit the palette, and export a polished vector version in seconds.
+                Sube una imagen, haz clic en cualquier parte para ver su color y cámbialo en esa zona o en todas las que lo comparten.
               </p>
 
               <div className="hero-actions">
                 <button type="button" onClick={() => inputRef.current?.click()} className="primary-button">
-                  Upload image
-                </button>
-                <button type="button" onClick={detectPalette} disabled={!imageSrc || isProcessing} className="secondary-button">
-                  Detect colors
+                  {imageSrc ? 'Cambiar imagen' : 'Subir imagen'}
                 </button>
               </div>
             </div>
 
             <div className="stats-panel">
               <div className="stats-item">
-                <span className="stats-label">Supported</span>
+                <span className="stats-label">Formatos</span>
                 <strong>PNG / JPG / WEBP / GIF / BMP / ICO</strong>
               </div>
               <div className="stats-item">
-                <span className="stats-label">Output</span>
-                <strong>SVG + PNG</strong>
+                <span className="stats-label">Salida</span>
+                <strong>SVG + PNG transparente</strong>
               </div>
               <div className="stats-item">
-                <span className="stats-label">Workflow</span>
-                <strong>Detect → Edit → Export</strong>
+                <span className="stats-label">Flujo</span>
+                <strong>Vectorizar → Fondo → Colores</strong>
               </div>
             </div>
           </div>
         </header>
+
+        <input ref={inputRef} type="file" className="hidden-input" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.ico" onChange={handleFileSelection} />
+
+        <section className="panel editor-panel">
+          <div className="panel-header">
+            <div>
+              <p className="panel-kicker">Editor</p>
+              <h2>Imagen → SVG editable</h2>
+            </div>
+            <span className="badge">{imageSize.width ? `${imageSize.width} × ${imageSize.height}px` : 'Sin imagen'}</span>
+          </div>
+
+          {!imageSrc ? (
+            <div
+              className="upload-box"
+              onClick={() => inputRef.current?.click()}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={handleDrop}
+            >
+              <div className="upload-empty-state">
+                <div className="upload-icon">⤴</div>
+                <p>Arrastra una imagen aquí o haz clic para elegirla</p>
+                <span>PNG, JPG, WEBP, GIF, BMP o ICO</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="editor-toolbar">
+                <button type="button" className="action-button primary" onClick={() => setRunId((n) => n + 1)} disabled={busy}>
+                  {busy ? 'Vectorizando…' : 'Vectorizar imagen'}
+                </button>
+                <button type="button" className="action-button secondary" onClick={removeBackground} disabled={!ready || busy}>
+                  Eliminar fondo
+                </button>
+                <button type="button" className="action-button neutral" onClick={undo} disabled={!history.length}>
+                  Deshacer
+                </button>
+                <button type="button" className="action-button neutral" onClick={resetAll} disabled={!ready}>
+                  Restaurar todo
+                </button>
+
+                <div className="toolbar-spacer" />
+
+                <button type="button" className="action-button success" onClick={downloadSvg} disabled={!ready}>
+                  Descargar SVG
+                </button>
+                <button type="button" className="action-button neutral" onClick={downloadPng} disabled={!ready}>
+                  Exportar PNG
+                </button>
+              </div>
+
+              <div className="mode-row">
+                <span className="control-label">Al cambiar un color</span>
+                <div className="segmented" role="group" aria-label="Alcance del cambio de color">
+                  <button type="button" className={mode === 'group' ? 'on' : ''} onClick={() => changeMode('group')}>
+                    Todas las zonas del mismo color
+                  </button>
+                  <button type="button" className={mode === 'region' ? 'on' : ''} onClick={() => changeMode('region')}>
+                    Solo la zona pulsada
+                  </button>
+                </div>
+              </div>
+
+              <div className="controls-grid">
+                <label className="control-card">
+                  <span className="control-label">Colores</span>
+                  <input type="range" min="2" max="16" step="1" value={params.colors} onChange={(e) => setParam('colors', Number(e.target.value))} />
+                  <strong>{params.colors}</strong>
+                </label>
+
+                <label className="control-card">
+                  <span className="control-label">Detalle</span>
+                  <input type="range" min="1" max="5" step="1" value={params.detail} onChange={(e) => setParam('detail', Number(e.target.value))} />
+                  <strong>{DETAIL_LABELS[params.detail - 1]}</strong>
+                </label>
+
+                <label className="control-card">
+                  <span className="control-label">Suavizado</span>
+                  <input type="range" min="0" max="3" step="1" value={params.smooth} onChange={(e) => setParam('smooth', Number(e.target.value))} />
+                  <strong>{SMOOTH_LABELS[params.smooth]}</strong>
+                </label>
+              </div>
+              <p className="hint">Al cambiar estos tres ajustes la imagen se vuelve a vectorizar y se pierden las ediciones.</p>
+
+              {error && <div className="error-box">{error}</div>}
+              {notice && <div className="notice-box">{notice}</div>}
+
+              <div className="editor-grid">
+                <div className="editor-card original-card">
+                  <div className="preview-label-row">
+                    <span>Original</span>
+                    <strong>{fileName}</strong>
+                  </div>
+                  <img src={imageSrc} alt="Imagen original" className="original-image" />
+                </div>
+
+                <div className="editor-card vector-card">
+                  <div className="preview-label-row">
+                    <span>Vector · haz clic en una zona</span>
+                    <strong>{ready ? `${visibleRegions.length} zonas` : '—'}</strong>
+                  </div>
+
+                  <div className="stage-wrap">
+                    {ready ? (
+                      <div
+                        ref={stageRef}
+                        className="editor-stage checker"
+                        style={{ aspectRatio: String(ratio), width: `min(100%, ${Math.round(560 * ratio)}px)` }}
+                        onClick={() => setSelected(null)}
+                      >
+                        <svg className="editor-svg" viewBox={`0 0 ${seg.width} ${seg.height}`} preserveAspectRatio="xMidYMid meet">
+                          <g fillRule="evenodd" strokeWidth="0.6" strokeLinejoin="round">
+                            {visibleRegions.map((region) => (
+                              <path
+                                key={region.id}
+                                d={region.path}
+                                fill={edit.fills[region.id]}
+                                stroke={edit.fills[region.id]}
+                                className="zone"
+                                onClick={(event) => selectRegion(region, event)}
+                              />
+                            ))}
+                          </g>
+                          <g fill="none" pointerEvents="none">
+                            {visibleRegions
+                              .filter((region) => highlightIds.has(region.id))
+                              .map((region) => (
+                                <path
+                                  key={region.id}
+                                  d={region.path}
+                                  fillRule="evenodd"
+                                  stroke="#22d3ee"
+                                  strokeWidth="2"
+                                  strokeLinejoin="round"
+                                  vectorEffect="non-scaling-stroke"
+                                />
+                              ))}
+                          </g>
+                        </svg>
+
+                        {selected && selectedColor && (
+                          <Callout
+                            selected={selected}
+                            color={selectedColor}
+                            count={selected.scope.length}
+                            mode={mode}
+                            onColor={(hex) => applyColor(selected.scope, hex)}
+                            onMode={changeMode}
+                            onDelete={() => hideIds(selected.scope)}
+                            onClose={() => setSelected(null)}
+                          />
+                        )}
+                      </div>
+                    ) : (
+                      <div className="preview-placeholder">{busy ? 'Vectorizando…' : 'Aquí aparecerá tu imagen vectorizada.'}</div>
+                    )}
+                  </div>
+                </div>
+
+                <aside className="editor-card palette-card">
+                  <div className="preview-label-row">
+                    <span>Colores actuales</span>
+                    <strong>{groups.length}</strong>
+                  </div>
+
+                  {groups.length ? (
+                    <>
+                      <div className="palette-rows">
+                        {groups.map((group) => (
+                          <div
+                            key={group.ids[0]}
+                            className="palette-row"
+                            onMouseEnter={() => setHoverHex(group.hex)}
+                            onMouseLeave={() => setHoverHex(null)}
+                          >
+                            <label className="swatch-input" style={{ backgroundColor: group.hex }} title="Cambiar este color en todas sus zonas">
+                              <input
+                                type="color"
+                                value={group.hex}
+                                onClick={snapshot}
+                                onChange={(event) => applyColor(group.ids, normalizeHex(event.target.value))}
+                              />
+                            </label>
+                            <div className="palette-meta">
+                              <strong>{group.hex}</strong>
+                              <span>
+                                {group.percent < 1 ? '<1' : Math.round(group.percent)}% · {group.ids.length} {group.ids.length === 1 ? 'zona' : 'zonas'}
+                              </span>
+                            </div>
+                            <button type="button" className="mini-button" title="Eliminar este color" onClick={() => hideIds(group.ids)}>
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="preset-row tight">
+                        {Object.entries(palettePresets).map(([key, colors]) => (
+                          <button key={key} type="button" onClick={() => applyPreset(key)} className={`preset-pill ${selectedPreset === key ? 'active' : ''}`}>
+                            <span className="preset-swatches">
+                              {colors.slice(0, 3).map((color) => (
+                                <span key={color} className="preset-swatch" style={{ backgroundColor: color }} />
+                              ))}
+                            </span>
+                            {key}
+                          </button>
+                        ))}
+                      </div>
+
+                      {hiddenCount > 0 && <p className="hint">{hiddenCount} {hiddenCount === 1 ? 'zona eliminada' : 'zonas eliminadas'} · «Restaurar todo» {hiddenCount === 1 ? 'la recupera' : 'las recupera'}.</p>}
+                    </>
+                  ) : (
+                    <div className="empty-state-card">{busy ? 'Detectando colores…' : 'Sin colores todavía.'}</div>
+                  )}
+                </aside>
+              </div>
+            </>
+          )}
+        </section>
 
         <section className="feature-grid">
           {features.map((feature) => (
@@ -843,271 +675,7 @@ export default function App() {
             </article>
           ))}
         </section>
-
-        <div className="preset-row">
-          {Object.entries(palettePresets).map(([key, colors]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => applyPreset(key)}
-              className={`preset-pill ${selectedPreset === key ? 'active' : ''}`}
-            >
-              <span className="preset-swatches">
-                {colors.slice(0, 3).map((color) => (
-                  <span key={color} className="preset-swatch" style={{ backgroundColor: color }} />
-                ))}
-              </span>
-              {key}
-            </button>
-          ))}
-        </div>
-
-        <main className="workspace-grid">
-          <section className="panel panel-main">
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">Source</p>
-                <h2>Upload and preview</h2>
-              </div>
-              <span className="badge">{fileStats}</span>
-            </div>
-
-            <div
-              className="upload-box"
-              onClick={() => inputRef.current?.click()}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={handleDrop}
-            >
-              <input ref={inputRef} type="file" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.ico" onChange={handleFileSelection} />
-
-              {imageSrc ? (
-                <div className="upload-preview-wrap">
-                  <img src={imageSrc} alt="Original" className="upload-preview" />
-                  <p>{fileName || 'Archivo cargado'}</p>
-                </div>
-              ) : (
-                <div className="upload-empty-state">
-                  <div className="upload-icon">⤴</div>
-                  <p>Drop an image here or browse</p>
-                  <span>PNG, JPG, WEBP, GIF, BMP or ICO</span>
-                </div>
-              )}
-            </div>
-
-            <div className="action-row">
-              <button type="button" onClick={detectPalette} disabled={!imageSrc || isProcessing} className="action-button primary">
-                {isProcessing ? 'Processing...' : 'Detect colors'}
-              </button>
-              <button type="button" onClick={vectorizeImage} disabled={!imageSrc || !detectedColors.length || isProcessing} className="action-button success">
-                Refresh vector
-              </button>
-              <button type="button" onClick={downloadSvg} disabled={!svgMarkup} className="action-button secondary">
-                Download SVG
-              </button>
-              <button type="button" onClick={downloadPng} disabled={!svgMarkup} className="action-button neutral">
-                Export PNG
-              </button>
-            </div>
-
-            <div className="controls-grid">
-              <label className="control-card">
-                <span className="control-label">Cell size</span>
-                <input type="range" min="8" max="28" step="2" value={gridSize} onChange={(e) => setGridSize(Number(e.target.value))} />
-                <strong>{gridSize}px</strong>
-              </label>
-
-              <label className="control-card">
-                <span className="control-label">Colors to detect</span>
-                <input type="range" min="2" max="12" step="1" value={paletteSize} onChange={(e) => setPaletteSize(Number(e.target.value))} />
-                <strong>{paletteSize} colors</strong>
-              </label>
-
-              <label className="control-card">
-                <span className="control-label">Background</span>
-                <div className="color-inline">
-                  <input type="color" value={backgroundColor} onChange={(e) => setBackgroundColor(e.target.value)} />
-                  <span>{backgroundColor}</span>
-                </div>
-              </label>
-
-              <label className="control-card">
-                <span className="control-label">Transparency</span>
-                <button
-                  type="button"
-                  onClick={() => setPreserveTransparency((prev) => !prev)}
-                  className={`toggle-button ${preserveTransparency ? 'on' : ''}`}
-                >
-                  <span>{preserveTransparency ? 'Enabled' : 'Disabled'}</span>
-                  <span className="toggle-indicator">{preserveTransparency ? '✓' : '○'}</span>
-                </button>
-              </label>
-            </div>
-
-            {error && <div className="error-box">{error}</div>}
-          </section>
-
-          <aside className="panel panel-side">
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">Palette</p>
-                <h2>Detected colors</h2>
-              </div>
-              <span className="badge accent">{detectedColors.length ? 'Ready' : 'Empty'}</span>
-            </div>
-
-            {imageSrc && detectedColors.length > 0 && (
-              <div className="live-preview">
-                <div className="live-preview-label">
-                  <span>Live preview</span>
-                  <button type="button" className="reset-button" onClick={resetColors}>
-                    Reset colors
-                  </button>
-                </div>
-
-                {svgMarkup ? (
-                  <RegionStage {...stageProps} ratio={imageRatio} maxHeight={240}>
-                    <div className="region-svg" dangerouslySetInnerHTML={{ __html: svgMarkup }} />
-                  </RegionStage>
-                ) : (
-                  <div className="preview-placeholder">Generating preview…</div>
-                )}
-                <p className="live-preview-hint">Hover a number or a color card to see which part of the image it controls.</p>
-              </div>
-            )}
-
-            <div className="palette-list">
-              {detectedColors.length ? (
-                detectedColors.map((color, index) => {
-                  const rgb = hexToRgb(color.value)
-                  const region = regions[index]
-                  const isActive = color.id === activeId
-                  const isPinned = color.id === pinnedId
-                  const changed = color.value !== color.source
-
-                  return (
-                    <div
-                      key={color.id}
-                      className={`color-card ${isActive ? 'active' : ''}`}
-                      onMouseEnter={() => setHoverId(color.id)}
-                      onMouseLeave={() => setHoverId(null)}
-                    >
-                      <div className="color-header">
-                        <div className="color-sample" style={{ backgroundColor: color.value, color: readableText(color.value) }}>
-                          {index + 1}
-                        </div>
-                        <div className="color-title">
-                          <input
-                            type="text"
-                            className="label-input"
-                            value={color.label}
-                            aria-label={`Name for color ${index + 1}`}
-                            onChange={(e) => updateColor(color.id, { label: e.target.value })}
-                          />
-                          <small>
-                            {color.value}
-                            {changed ? ` · was ${color.source}` : ''}
-                          </small>
-                        </div>
-                        <input type="color" value={color.value} onChange={(e) => updateColorValue(color.id, e.target.value)} />
-                      </div>
-
-                      {region && (
-                        <div className="region-row">
-                          <div className="region-thumb">
-                            <img src={imageSrc} alt="" />
-                            {region.mask && <img src={region.mask} alt="" className="region-thumb-mask" />}
-                          </div>
-                          <div className="region-meta">
-                            <strong>{formatPercent(region.coverage)}% of the image</strong>
-                            <span>{region.description}</span>
-                          </div>
-                          <button
-                            type="button"
-                            className={`locate-button ${isPinned ? 'on' : ''}`}
-                            onClick={() => setPinnedId(isPinned ? null : color.id)}
-                          >
-                            {isPinned ? 'Pinned' : 'Locate'}
-                          </button>
-                        </div>
-                      )}
-
-                      <div className="rgb-grid">
-                        {['r', 'g', 'b'].map((channel) => (
-                          <label key={channel} className="rgb-slider">
-                            <div className="rgb-meta">
-                              <span>{channel.toUpperCase()}</span>
-                              <strong>{rgb[channel]}</strong>
-                            </div>
-                            <input
-                              type="range"
-                              min="0"
-                              max="255"
-                              value={rgb[channel]}
-                              onChange={(e) => updateColorByRgb(color.id, channel, e.target.value)}
-                            />
-                          </label>
-                        ))}
-                      </div>
-
-                      <HexInput value={color.value} onCommit={(next) => updateColorValue(color.id, next)} />
-                    </div>
-                  )
-                })
-              ) : (
-                <div className="empty-state-card">Detect a source image to generate a palette.</div>
-              )}
-            </div>
-          </aside>
-        </main>
-
-        <section className="panel preview-panel">
-          <div className="panel-header preview-header">
-            <div>
-              <p className="panel-kicker">Preview</p>
-              <h2>Original vs vector output</h2>
-            </div>
-            <div className="preview-tags">
-              <span>Original</span>
-              <span className="tag-highlight">SVG</span>
-            </div>
-          </div>
-
-          <div className="preview-grid">
-            <div className="preview-card">
-              <div className="preview-label-row">
-                <span>Original</span>
-                <strong>{fileStats}</strong>
-              </div>
-              {imageSrc ? (
-                <div className="stage-center">
-                  <RegionStage {...stageProps} ratio={imageRatio}>
-                    <img src={imageSrc} alt="Original" className="region-base" />
-                  </RegionStage>
-                </div>
-              ) : (
-                <div className="preview-placeholder">No image loaded</div>
-              )}
-            </div>
-
-            <div className="preview-card">
-              <div className="preview-label-row">
-                <span>Vector</span>
-                <strong>SVG</strong>
-              </div>
-              {svgMarkup ? (
-                <div className="stage-center">
-                  <RegionStage {...stageProps} ratio={imageRatio} showMarkers={false}>
-                    <div className="region-svg" dangerouslySetInnerHTML={{ __html: svgMarkup }} />
-                  </RegionStage>
-                </div>
-              ) : (
-                <div className="preview-placeholder">Your vector output will appear here.</div>
-              )}
-            </div>
-          </div>
-        </section>
       </div>
     </div>
   )
 }
-
