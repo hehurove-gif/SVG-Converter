@@ -1,14 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 
-const ACCEPTED_TYPES = [
-  'image/png',
-  'image/jpeg',
-  'image/jpg',
-  'image/webp',
-  'image/gif',
-  'image/bmp',
-  'image/x-icon'
-]
+const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/x-icon']
 
 const palettePresets = {
   vivid: ['#0F172A', '#2563EB', '#F59E0B', '#10B981', '#EF4444', '#F8FAFC'],
@@ -39,11 +31,7 @@ function normalizeHex(hex) {
 function hexToRgb(hex) {
   const value = normalizeHex(hex).replace('#', '')
   const number = Number.parseInt(value, 16)
-  return {
-    r: (number >> 16) & 255,
-    g: (number >> 8) & 255,
-    b: number & 255
-  }
+  return { r: (number >> 16) & 255, g: (number >> 8) & 255, b: number & 255 }
 }
 
 function rgbToHex(r, g, b) {
@@ -70,7 +58,7 @@ function buildPaletteFromImage(image, maxColors = 6) {
 
   for (let i = 0; i < data.length; i += 4) {
     const alpha = data[i + 3]
-    if (alpha < 32) continue
+    if (alpha < 30) continue
 
     const r = data[i]
     const g = data[i + 1]
@@ -79,29 +67,20 @@ function buildPaletteFromImage(image, maxColors = 6) {
     buckets.set(key, (buckets.get(key) || 0) + 1)
   }
 
-  const sortedKeys = [...buckets.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([key]) => key)
-
+  const sortedKeys = [...buckets.entries()].sort((a, b) => b[1] - a[1]).map(([key]) => key)
   const uniqueColors = []
+
   for (const key of sortedKeys) {
     const [r, g, b] = key.split(',').map(Number)
     const candidate = rgbToHex(r, g, b)
 
     const alreadyClose = uniqueColors.some((existing) => {
       const current = hexToRgb(existing)
-      const distance = Math.sqrt(
-        (current.r - r) ** 2 +
-        (current.g - g) ** 2 +
-        (current.b - b) ** 2
-      )
+      const distance = Math.sqrt((current.r - r) ** 2 + (current.g - g) ** 2 + (current.b - b) ** 2)
       return distance < 40
     })
 
-    if (!alreadyClose) {
-      uniqueColors.push(candidate)
-    }
-
+    if (!alreadyClose) uniqueColors.push(candidate)
     if (uniqueColors.length >= maxColors) break
   }
 
@@ -115,12 +94,7 @@ function getClosestColor(hex, palette) {
 
   for (const candidate of palette) {
     const color = hexToRgb(candidate)
-    const distance = Math.sqrt(
-      (target.r - color.r) ** 2 +
-      (target.g - color.g) ** 2 +
-      (target.b - color.b) ** 2
-    )
-
+    const distance = Math.sqrt((target.r - color.r) ** 2 + (target.g - color.g) ** 2 + (target.b - color.b) ** 2)
     if (distance < minDistance) {
       minDistance = distance
       closest = candidate
@@ -148,7 +122,7 @@ function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
 
       const ctx = canvas.getContext('2d')
       if (!ctx) {
-        reject(new Error('No se pudo preparar el canvas de render.'))
+        reject(new Error('No se pudo preparar el canvas para vectorizar.'))
         return
       }
 
@@ -194,9 +168,7 @@ function vectorizeSvgFromImage(imageSrc, palette, options = {}) {
           const nearest = getClosestColor(averageHex, palette)
           const opacity = preserveTransparency ? clamp(avgAlpha / 255, 0.2, 1) : 1
 
-          blocks.push(
-            `<rect x="${x}" y="${y}" width="${cellSize + 1}" height="${cellSize + 1}" fill="${nearest}" fill-opacity="${opacity}" />`
-          )
+          blocks.push(`<rect x="${x}" y="${y}" width="${cellSize + 1}" height="${cellSize + 1}" fill="${nearest}" fill-opacity="${opacity}" />`)
         }
       }
 
@@ -270,7 +242,7 @@ export default function App() {
   const [preserveTransparency, setPreserveTransparency] = useState(true)
 
   const fileStats = useMemo(
-    () => (imageInfo.width ? `${imageInfo.width} × ${imageInfo.height}px` : 'Sin imagen'),
+    () => (imageInfo.width ? `${imageInfo.width} × ${imageInfo.height}px` : 'No image'),
     [imageInfo]
   )
 
@@ -279,7 +251,7 @@ export default function App() {
     if (!file) return
 
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      setError('Formato no compatible. Prueba PNG, JPG, WEBP, GIF, BMP o ICO.')
+      setError('Formato no compatible. Prueba con PNG, JPG, WEBP, GIF, BMP o ICO.')
       return
     }
 
@@ -308,7 +280,7 @@ export default function App() {
 
   const detectPalette = () => {
     if (!imageSrc) {
-      setError('Primero añade una imagen para analizarla.')
+      setError('Primero selecciona una imagen para analizarla.')
       return
     }
 
@@ -351,12 +323,7 @@ export default function App() {
         if (color.id !== id) return color
 
         const { r, g, b } = hexToRgb(color.value)
-        const nextRgb = {
-          r,
-          g,
-          b,
-          [channel]: clamp(Number(numericValue) || 0, 0, 255)
-        }
+        const nextRgb = { r, g, b, [channel]: clamp(Number(numericValue) || 0, 0, 255) }
 
         return {
           ...color,
@@ -410,22 +377,29 @@ export default function App() {
     }
   }
 
+  const features = [
+    { title: 'Fast conversion', text: 'Vectorize logos, icons and illustrations with a precise color-driven workflow.' },
+    { title: 'Editable palette', text: 'Accept the detected palette or modify each color manually with RGB controls.' },
+    { title: 'Export ready', text: 'Download SVG for web and PNG for presentations or sharing.' }
+  ]
+
   return (
-    <div className="app-shell min-h-screen text-slate-100">
+    <div className="app-shell">
       <div className="top-glow" />
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <header className="mb-8">
+
+      <div className="container">
+        <header className="hero">
           <div className="brand-row">
             <div className="brand-mark">S</div>
             <span>SVG Forge</span>
           </div>
 
           <div className="hero-grid">
-            <div>
-              <p className="eyebrow">Image to vector workflow</p>
-              <h1>Convert your image into a clean SVG with precise color control.</h1>
+            <div className="hero-copy">
+              <p className="eyebrow">Professional image to SVG workflow</p>
+              <h1>Convert any image to a clean SVG with color control.</h1>
               <p className="subhead">
-                Detect dominant colors, refine the palette, and export a professional SVG or PNG in seconds.
+                Upload a file, detect the dominant colors, accept or edit the palette, and export a polished vector version in seconds.
               </p>
 
               <div className="hero-actions">
@@ -439,21 +413,31 @@ export default function App() {
             </div>
 
             <div className="stats-panel">
-              <div className="stat-item">
-                <span className="stat-label">Supported</span>
+              <div className="stats-item">
+                <span className="stats-label">Supported</span>
                 <strong>PNG / JPG / WEBP / GIF / BMP / ICO</strong>
               </div>
-              <div className="stat-item">
-                <span className="stat-label">Output</span>
+              <div className="stats-item">
+                <span className="stats-label">Output</span>
                 <strong>SVG + PNG</strong>
               </div>
-              <div className="stat-item">
-                <span className="stat-label">Workflow</span>
+              <div className="stats-item">
+                <span className="stats-label">Workflow</span>
                 <strong>Detect → Edit → Export</strong>
               </div>
             </div>
           </div>
         </header>
+
+        <section className="feature-grid">
+          {features.map((feature) => (
+            <article key={feature.title} className="feature-card">
+              <div className="feature-icon">◇</div>
+              <h3>{feature.title}</h3>
+              <p>{feature.text}</p>
+            </article>
+          ))}
+        </section>
 
         <div className="preset-row">
           {Object.entries(palettePresets).map(([key, colors]) => (
@@ -463,7 +447,7 @@ export default function App() {
               onClick={() => applyPreset(key)}
               className={`preset-pill ${selectedPreset === key ? 'active' : ''}`}
             >
-              <span className="preset-swatch-wrap">
+              <span className="preset-swatches">
                 {colors.slice(0, 3).map((color) => (
                   <span key={color} className="preset-swatch" style={{ backgroundColor: color }} />
                 ))}
@@ -474,25 +458,17 @@ export default function App() {
         </div>
 
         <main className="workspace-grid">
-          <section className="glass-panel panel-main">
-            <div className="workspace-header">
+          <section className="panel panel-main">
+            <div className="panel-header">
               <div>
                 <p className="panel-kicker">Source</p>
                 <h2>Upload and preview</h2>
               </div>
-              <span className="status-badge">{fileStats}</span>
+              <span className="badge">{fileStats}</span>
             </div>
 
-            <div
-              className="upload-box"
-              onClick={() => inputRef.current?.click()}
-            >
-              <input
-                ref={inputRef}
-                type="file"
-                accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.ico"
-                onChange={handleFileSelection}
-              />
+            <div className="upload-box" onClick={() => inputRef.current?.click()}>
+              <input ref={inputRef} type="file" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.ico" onChange={handleFileSelection} />
 
               {imageSrc ? (
                 <div className="upload-preview-wrap">
@@ -532,7 +508,7 @@ export default function App() {
 
               <label className="control-card">
                 <span className="control-label">Background</span>
-                <div className="control-color-row">
+                <div className="color-inline">
                   <input type="color" value={backgroundColor} onChange={(e) => setBackgroundColor(e.target.value)} />
                   <span>{backgroundColor}</span>
                 </div>
@@ -554,13 +530,13 @@ export default function App() {
             {error && <div className="error-box">{error}</div>}
           </section>
 
-          <aside className="glass-panel panel-side">
-            <div className="workspace-header">
+          <aside className="panel panel-side">
+            <div className="panel-header">
               <div>
                 <p className="panel-kicker">Palette</p>
                 <h2>Detected colors</h2>
               </div>
-              <span className="status-badge accent">{detectedColors.length ? 'Ready' : 'Empty'}</span>
+              <span className="badge accent">{detectedColors.length ? 'Ready' : 'Empty'}</span>
             </div>
 
             <div className="palette-list">
@@ -596,26 +572,19 @@ export default function App() {
                         ))}
                       </div>
 
-                      <input
-                        type="text"
-                        value={color.value}
-                        onChange={(e) => updateColorValue(color.id, e.target.value)}
-                        className="hex-input"
-                      />
+                      <input type="text" value={color.value} onChange={(e) => updateColorValue(color.id, e.target.value)} className="hex-input" />
                     </div>
                   )
                 })
               ) : (
-                <div className="empty-state-card">
-                  Detect a source image to create a palette.
-                </div>
+                <div className="empty-state-card">Detect a source image to generate a palette.</div>
               )}
             </div>
           </aside>
         </main>
 
-        <section className="glass-panel preview-section">
-          <div className="workspace-header preview-header">
+        <section className="panel preview-panel">
+          <div className="panel-header preview-header">
             <div>
               <p className="panel-kicker">Preview</p>
               <h2>Original vs vector output</h2>
@@ -633,7 +602,7 @@ export default function App() {
                 <strong>{fileStats}</strong>
               </div>
               {imageSrc ? (
-                <img src={imageSrc} alt="Original preview" className="preview-image" />
+                <img src={imageSrc} alt="Original" className="preview-image" />
               ) : (
                 <div className="preview-placeholder">No image loaded</div>
               )}
