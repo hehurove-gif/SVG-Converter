@@ -77,6 +77,90 @@ function rgbToLab(r, g, b, out, offset) {
 
 const dist2 = (a, ai, b, bi) => (a[ai] - b[bi]) ** 2 + (a[ai + 1] - b[bi + 1]) ** 2 + (a[ai + 2] - b[bi + 2]) ** 2
 
+// ---------- Limpieza de ruido ----------
+
+// Ruido de compresión (bloques JPEG, grano): por cada píxel se promedian solo los vecinos de su fila y
+// columna cuyo color es casi igual (diferencia menor que `tol` en Lab). En degradados suaves los
+// escalones de 8x8 desaparecen; los bordes reales (diferencia grande) no se tocan.
+const DENOISE = [
+  { radius: 9, tol: 7, iterations: 2 },
+  { radius: 7, tol: 6, iterations: 2 },
+  { radius: 6, tol: 5, iterations: 2 },
+  { radius: 4, tol: 4, iterations: 1 },
+  null
+]
+
+function denoise(data, lab, valid, W, H, config) {
+  const N = W * H
+  const tol2 = config.tol * config.tol
+  const solid = new Uint8Array(N)
+  for (let i = 0; i < N; i += 1) solid[i] = valid[i] && data[i * 4 + 3] >= 250 ? 1 : 0
+
+  let rgb = new Float32Array(N * 3)
+  for (let i = 0; i < N; i += 1) {
+    rgb[i * 3] = data[i * 4]
+    rgb[i * 3 + 1] = data[i * 4 + 1]
+    rgb[i * 3 + 2] = data[i * 4 + 2]
+  }
+  let out = new Float32Array(N * 3)
+  const radius = config.radius
+
+  for (let iteration = 0; iteration < config.iterations; iteration += 1) {
+    for (let axis = 0; axis < 2; axis += 1) {
+      const horizontal = axis === 0
+      const stride = horizontal ? 1 : W
+
+      for (let y = 0; y < H; y += 1) {
+        for (let x = 0; x < W; x += 1) {
+          const i = y * W + x
+          const i3 = i * 3
+
+          if (!solid[i]) {
+            out[i3] = rgb[i3]
+            out[i3 + 1] = rgb[i3 + 1]
+            out[i3 + 2] = rgb[i3 + 2]
+            continue
+          }
+
+          const pos = horizontal ? x : y
+          const size = horizontal ? W : H
+          const from = Math.max(-radius, -pos)
+          const to = Math.min(radius, size - 1 - pos)
+          let r = 0
+          let g = 0
+          let b = 0
+          let n = 0
+
+          for (let o = from; o <= to; o += 1) {
+            const j = i + o * stride
+            if (!solid[j] || dist2(lab, i3, lab, j * 3) > tol2) continue
+            r += rgb[j * 3]
+            g += rgb[j * 3 + 1]
+            b += rgb[j * 3 + 2]
+            n += 1
+          }
+
+          out[i3] = r / n
+          out[i3 + 1] = g / n
+          out[i3 + 2] = b / n
+        }
+      }
+
+      const swap = rgb
+      rgb = out
+      out = swap
+    }
+  }
+
+  for (let i = 0; i < N; i += 1) {
+    if (!solid[i]) continue
+    data[i * 4] = Math.round(rgb[i * 3])
+    data[i * 4 + 1] = Math.round(rgb[i * 3 + 1])
+    data[i * 4 + 2] = Math.round(rgb[i * 3 + 2])
+    rgbToLab(data[i * 4], data[i * 4 + 1], data[i * 4 + 2], lab, i * 3)
+  }
+}
+
 // ---------- Píxeles planos y paleta ----------
 
 // Un píxel es "plano" si es casi idéntico a sus vecinos; los de borde (mezclas) no lo son.
@@ -729,8 +813,9 @@ const SMOOTH_LEVELS = [
 ]
 
 // Campo de pertenencia de una zona: 1 dentro, 0 fuera y valores parciales en los píxeles de borde
-// (según la mezcla de color medida), de modo que el contorno cae donde está el borde real.
-function traceRegion(list, id, zoneLabel, regionId, partner, tp, W, H, level) {
+// (según la mezcla de color medida). En los bordes de la imagen se prolonga por réplica para que
+// el contorno no se retire del marco. Se devuelve ya suavizado (desenfoque de caja).
+function regionField(list, id, zoneLabel, regionId, partner, tp, W, H, level) {
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
@@ -746,10 +831,12 @@ function traceRegion(list, id, zoneLabel, regionId, partner, tp, W, H, level) {
   }
 
   const pad = level.blur * level.passes + 3
+  const x0 = minX - pad
+  const y0 = minY - pad
   const gw = maxX - minX + 1 + pad * 2
   const gh = maxY - minY + 1 + pad * 2
-  let field = new Float32Array(gw * gh)
-  const at = (x, y) => (y - minY + pad) * gw + (x - minX + pad)
+  const field = new Float32Array(gw * gh)
+  const at = (x, y) => (y - y0) * gw + (x - x0)
 
   for (const p of list) {
     const x = p % W
@@ -777,6 +864,18 @@ function traceRegion(list, id, zoneLabel, regionId, partner, tp, W, H, level) {
     }
   }
 
+  // Réplica fuera del marco de la imagen (primero columnas, luego filas).
+  if (x0 < 0 || y0 < 0 || x0 + gw > W || y0 + gh > H) {
+    for (let j = 0; j < gh; j += 1) {
+      const y = Math.min(H - 1, Math.max(0, y0 + j))
+      for (let i = 0; i < gw; i += 1) {
+        const x = x0 + i
+        if (x >= 0 && x < W && y0 + j >= 0 && y0 + j < H) continue
+        field[j * gw + i] = field[at(Math.min(W - 1, Math.max(0, x)), y)]
+      }
+    }
+  }
+
   if (level.blur > 0) {
     const scratch = new Float32Array(gw * gh)
     for (let pass = 0; pass < level.passes; pass += 1) {
@@ -785,20 +884,116 @@ function traceRegion(list, id, zoneLabel, regionId, partner, tp, W, H, level) {
     }
   }
 
-  const offsetX = minX - pad + 0.5
-  const offsetY = minY - pad + 0.5
-  const parts = []
+  return { field, gw, gh, x0, y0 }
+}
 
-  for (const loop of marchingSquares(field, gw, gh, level.threshold)) {
-    const points = simplifyLoop(loop.map((point) => [point[0] + offsetX, point[1] + offsetY]), level.epsilon)
-    if (points.length < 3 || polygonArea(points) < 2) continue
+// Contornos de todas las zonas como una partición: cada zona ocupa donde su campo es el mayor
+// (frente al de las demás y al del vacío transparente). Así, en las uniones de 3 o más zonas
+// no quedan huecos ni solapes y los bordes compartidos coinciden.
+function traceRegions(zones, regionId, partner, tp, W, H, level) {
+  const N = W * H
+  const top1 = new Float32Array(N)
+  const top2 = new Float32Array(N)
+  const top1id = new Int32Array(N).fill(-1)
+  const cache = new Map()
+  let cached = 0
 
-    const path = loopToPath(points, level.radius)
-    if (path) parts.push(path)
+  const accumulate = (zone, f) => {
+    for (let j = 0; j < f.gh; j += 1) {
+      const y = f.y0 + j
+      if (y < 0 || y >= H) continue
+      for (let i = 0; i < f.gw; i += 1) {
+        const x = f.x0 + i
+        if (x < 0 || x >= W) continue
+        const v = f.field[j * f.gw + i]
+        if (v <= 0) continue
+        const p = y * W + x
+        if (v > top1[p]) {
+          top2[p] = top1[p]
+          top1[p] = v
+          top1id[p] = zone.id
+        } else if (v > top2[p]) {
+          top2[p] = v
+        }
+      }
+    }
   }
 
-  field = null
-  return parts.join('')
+  const build = (zone) => regionField(zone.list, zone.id, zone.label, regionId, partner, tp, W, H, level)
+
+  for (const zone of zones) {
+    const f = build(zone)
+    accumulate(zone, f)
+    if (cached + f.field.length <= 6e6) {
+      cache.set(zone.id, f)
+      cached += f.field.length
+    }
+  }
+
+  // Campo del vacío: píxeles transparentes (y la parte transparente de los semitransparentes).
+  let voidField = null
+  for (let p = 0; p < N; p += 1) {
+    const v = regionId[p] < 0 ? 1 : partner[p] === -2 ? tp[p] : 0
+    if (v > 0) {
+      if (!voidField) voidField = new Float32Array(N)
+      voidField[p] = v
+    }
+  }
+  if (voidField && level.blur > 0) {
+    const scratch = new Float32Array(N)
+    for (let pass = 0; pass < level.passes; pass += 1) {
+      boxBlur(voidField, scratch, W, H, level.blur, true)
+      boxBlur(scratch, voidField, W, H, level.blur, false)
+    }
+  }
+
+  const bias = (0.5 - level.threshold) * 2
+  const result = new Map()
+
+  for (const zone of zones) {
+    const f = cache.get(zone.id) || build(zone)
+    cache.delete(zone.id)
+    const { field, gw, gh, x0, y0 } = f
+    const d = new Float32Array(gw * gh)
+
+    for (let j = 0; j < gh; j += 1) {
+      const y = Math.min(H - 1, Math.max(0, y0 + j))
+      for (let i = 0; i < gw; i += 1) {
+        const own = field[j * gw + i]
+        if (own <= 1e-4) {
+          d[j * gw + i] = -1
+          continue
+        }
+        const x = Math.min(W - 1, Math.max(0, x0 + i))
+        const p = y * W + x
+        let other = top1id[p] === zone.id ? top2[p] : top1[p]
+        if (voidField && voidField[p] > other) other = voidField[p]
+        d[j * gw + i] = own - other
+      }
+    }
+
+    // Marco exterior fuera de la zona: cierra los contornos de zonas que tocan el borde de la imagen.
+    for (let i = 0; i < gw; i += 1) {
+      d[i] = -1
+      d[(gh - 1) * gw + i] = -1
+    }
+    for (let j = 0; j < gh; j += 1) {
+      d[j * gw] = -1
+      d[j * gw + gw - 1] = -1
+    }
+
+    const parts = []
+    for (const loop of marchingSquares(d, gw, gh, -bias)) {
+      const points = simplifyLoop(loop.map((point) => [point[0] + x0 + 0.5, point[1] + y0 + 0.5]), level.epsilon)
+      if (points.length < 3 || polygonArea(points) < 2) continue
+
+      const path = loopToPath(points, level.radius)
+      if (path) parts.push(path)
+    }
+    result.set(zone.id, parts.join(''))
+  }
+
+  return result
 }
 
 // ---------- Segmentación principal ----------
@@ -827,6 +1022,8 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
 
   if (!opaque) return empty
   const transparentRatio = 1 - opaque / N
+
+  if (DENOISE[detail - 1]) denoise(data, lab, valid, W, H, DENOISE[detail - 1])
 
   // Paleta a partir de píxeles planos (si casi no hay, de todos).
   let flat = computeFlat(data, lab, valid, W, H, 4)
@@ -1072,14 +1269,16 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
 
   const level = SMOOTH_LEVELS[smooth]
 
-  const output = regions
-    .filter((r) => r.alive && r.list.length)
+  const alive = regions.filter((r) => r.alive && r.list.length)
+  const paths = traceRegions(alive, regionId, partner, tp, W, H, level)
+
+  const output = alive
     .map((r) => ({
       id: r.id,
       label: r.label,
       area: r.list.length,
       borderPx: borderPixels.get(r.id) || 0,
-      path: traceRegion(r.list, r.id, r.label, regionId, partner, tp, W, H, level)
+      path: paths.get(r.id)
     }))
     .filter((r) => r.path)
     .sort((a, b) => b.area - a.area)
@@ -1120,7 +1319,7 @@ export function buildSvg(seg, fills, hidden, size) {
       return `<path d="${r.path}" fill="${fill}" stroke="${fill}"/>`
     })
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${seg.width} ${seg.height}" width="${outW}" height="${outH}"><g fill-rule="evenodd" stroke-width="0.35" stroke-linejoin="round">${paths.join('')}</g></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${seg.width} ${seg.height}" width="${outW}" height="${outH}"><g fill-rule="evenodd" stroke-width="0.6" stroke-linejoin="round">${paths.join('')}</g></svg>`
 }
 
 export { hexToRgb }
