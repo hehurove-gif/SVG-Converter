@@ -139,6 +139,9 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [params, setParams] = useState({ colors: 12, detail: 3, smooth: 2 })
   const [runId, setRunId] = useState(0)
+  const [applied, setApplied] = useState(null)
+  const paramsRef = useRef(params)
+  paramsRef.current = params
   const [seg, setSeg] = useState(null)
   const [edit, setEdit] = useState({ fills: {}, hidden: {} })
   const [history, setHistory] = useState([])
@@ -161,7 +164,9 @@ export default function App() {
         const image = await loadImage(imageSrc)
         if (cancelled) return
 
-        const result = segmentImage(image, params)
+        const used = { ...paramsRef.current }
+        const result = segmentImage(image, used)
+        setApplied(used)
         if (cancelled) return
 
         setImageSize({ width: image.width, height: image.height })
@@ -181,7 +186,7 @@ export default function App() {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [imageSrc, params, runId])
+  }, [imageSrc, runId])
 
   useEffect(() => {
     const onKey = (event) => {
@@ -396,6 +401,7 @@ export default function App() {
     }
   }
 
+  const pending = Boolean(applied) && JSON.stringify(applied) !== JSON.stringify(params)
   const setParam = (key, value) => setParams((current) => ({ ...current, [key]: value }))
   const ratio = seg ? seg.width / seg.height : 1
   const ready = Boolean(seg && seg.regions.length)
@@ -481,10 +487,6 @@ export default function App() {
                   <button type="button" className="tool-btn" onClick={() => inputRef.current?.click()}>
                     <span className="tool-icon">⤴</span>Cambiar imagen
                   </button>
-                  <button type="button" className="tool-btn primary" onClick={() => setRunId((n) => n + 1)} disabled={busy}>
-                    <span className="tool-icon">✦</span>
-                    {busy ? 'Vectorizando…' : 'Vectorizar imagen'}
-                  </button>
                 </div>
 
                 <div className="tool-group">
@@ -532,7 +534,15 @@ export default function App() {
                     </span>
                     <input type="range" min="0" max="3" step="1" value={params.smooth} onChange={(e) => setParam('smooth', Number(e.target.value))} />
                   </label>
-                  <p className="hint">Al cambiar estos ajustes se vuelve a vectorizar y se pierden las ediciones.</p>
+                  <button type="button" className={`tool-btn ${pending ? 'primary' : ''}`} onClick={() => setRunId((n) => n + 1)} disabled={!pending || busy}>
+                    <span className="tool-icon">{pending ? '✦' : '✓'}</span>
+                    {busy ? 'Vectorizando…' : pending ? 'Aplicar ajustes' : 'Ajustes aplicados'}
+                  </button>
+                  <p className="hint">
+                    {pending
+                      ? 'Hay ajustes sin aplicar. Al aplicarlos se vuelve a vectorizar y se pierden las ediciones.'
+                      : 'La imagen se vectoriza sola al subirla. Mueve los ajustes y pulsa «Aplicar ajustes» para repetirlo.'}
+                  </p>
                 </div>
 
                 <div className="tool-group">

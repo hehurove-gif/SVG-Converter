@@ -80,14 +80,14 @@ const dist2 = (a, ai, b, bi) => (a[ai] - b[bi]) ** 2 + (a[ai + 1] - b[bi + 1]) *
 // ---------- Píxeles planos y paleta ----------
 
 // Un píxel es "plano" si es casi idéntico a sus vecinos; los de borde (mezclas) no lo son.
-function computeFlat(lab, valid, W, H, limit) {
+function computeFlat(data, lab, valid, W, H, limit) {
   const flat = new Uint8Array(W * H)
   const lim = limit * limit
 
   for (let y = 0; y < H; y += 1) {
     for (let x = 0; x < W; x += 1) {
       const i = y * W + x
-      if (!valid[i]) continue
+      if (!valid[i] || data[i * 4 + 3] < 250) continue
 
       let ok = true
       const test = (j) => {
@@ -319,6 +319,26 @@ function classify(data, lab, valid, flat, centersLab, W, H) {
       const r = data[i * 4]
       const g = data[i * 4 + 1]
       const b = data[i * 4 + 2]
+
+      // Píxel semitransparente (borde de la silueta): el color no es una mezcla de dos colores
+      // sino "color + transparencia". Se toma el color vecino más parecido y el alfa como cobertura.
+      const alpha = data[i * 4 + 3]
+      if (alpha < 250) {
+        let pick = near
+        let pickD = Infinity
+        for (let u = 0; u < local; u += 1) {
+          const A = cand[u]
+          const d = Math.hypot(r - rgb[A * 3], g - rgb[A * 3 + 1], b - rgb[A * 3 + 2])
+          if (d < pickD) {
+            pickD = d
+            pick = A
+          }
+        }
+        label[i] = pick
+        partner[i] = -2
+        tp[i] = 1 - alpha / 255
+        continue
+      }
 
       let bestRes = Infinity
       let bestA = near
@@ -734,7 +754,7 @@ function traceRegion(list, id, zoneLabel, regionId, partner, tp, W, H, level) {
   for (const p of list) {
     const x = p % W
     const y = (p - x) / W
-    field[at(x, y)] = partner[p] >= 0 ? 1 - tp[p] : 1
+    field[at(x, y)] = partner[p] !== -1 ? 1 - tp[p] : 1
   }
 
   // Vecinos de otra zona que contienen algo de este color (su "partner") aportan la fracción parcial.
@@ -799,7 +819,7 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
   let opaque = 0
 
   for (let i = 0; i < N; i += 1) {
-    if (data[i * 4 + 3] < 30) continue
+    if (data[i * 4 + 3] < 20) continue
     valid[i] = 1
     opaque += 1
     rgbToLab(data[i * 4], data[i * 4 + 1], data[i * 4 + 2], lab, i * 3)
@@ -809,7 +829,7 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
   const transparentRatio = 1 - opaque / N
 
   // Paleta a partir de píxeles planos (si casi no hay, de todos).
-  let flat = computeFlat(lab, valid, W, H, 4)
+  let flat = computeFlat(data, lab, valid, W, H, 4)
   let flatCount = 0
   for (let i = 0; i < N; i += 1) flatCount += flat[i]
   if (flatCount < Math.max(200, opaque * 0.02)) {
@@ -861,7 +881,7 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
   for (let pass = 0; pass < DETAIL_PASSES[detail - 1]; pass += 1) {
     const cleaned = despeckle(label, W, H, k)
     for (let i = 0; i < N; i += 1) {
-      if (cleaned[i] !== label[i]) {
+      if (cleaned[i] !== label[i] && partner[i] !== -2) {
         partner[i] = -1
         tp[i] = 0
       }
@@ -946,8 +966,86 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
     for (const p of r.list) {
       regionId[p] = best
       label[p] = target.label
-      partner[p] = -1
-      tp[p] = 0
+      if (partner[p] !== -2) {
+        partner[p] = -1
+        tp[p] = 0
+      }
+      target.list.push(p)
+    }
+    r.alive = false
+    r.list = []
+  }
+
+  // Hilos finos cuyo color es una mezcla de sus dos vecinas (restos del suavizado de bordes):
+  // no son zonas reales, se absorben en la vecina dominante.
+  const centersRgb = palette.map((hex) => hexToRgb(hex))
+  const thin = regions
+    .filter((r) => r.alive && r.list.length && r.list.length < N * 0.004)
+    .sort((a, b) => a.list.length - b.list.length)
+
+  for (const r of thin) {
+    if (!r.alive) continue
+
+    const neighbors = new Map()
+    let boundary = 0
+
+    for (const p of r.list) {
+      const x = p % W
+      let edge = false
+      const look = (q) => {
+        const rid = q < 0 ? -1 : regionId[q]
+        if (rid === r.id) return
+        edge = true
+        if (rid >= 0) neighbors.set(rid, (neighbors.get(rid) || 0) + 1)
+      }
+      look(x > 0 ? p - 1 : -1)
+      look(x < W - 1 ? p + 1 : -1)
+      look(p >= W ? p - W : -1)
+      look(p + W < N ? p + W : -1)
+      if (edge) boundary += 1
+    }
+
+    if (r.list.length / Math.max(1, boundary) > 1.7) continue
+
+    const byLabel = new Map()
+    for (const [rid, c] of neighbors) {
+      const lab1 = regions[rid].label
+      byLabel.set(lab1, (byLabel.get(lab1) || 0) + c)
+    }
+    if (byLabel.size < 2) continue
+
+    const top = [...byLabel.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map((entry) => entry[0])
+    const A = centersRgb[top[0]]
+    const B = centersRgb[top[1]]
+    const C = centersRgb[r.label]
+    const dr = B.r - A.r
+    const dg = B.g - A.g
+    const db = B.b - A.b
+    const dd = dr * dr + dg * dg + db * db
+    if (!dd) continue
+
+    const t = ((C.r - A.r) * dr + (C.g - A.g) * dg + (C.b - A.b) * db) / dd
+    const residual = Math.hypot(C.r - (A.r + t * dr), C.g - (A.g + t * dg), C.b - (A.b + t * db))
+    if (t < 0.1 || t > 0.9 || residual > 16 || r.label === top[0] || r.label === top[1]) continue
+
+    let best = -1
+    let bestCount = -1
+    for (const [rid, c] of neighbors) {
+      if ((regions[rid].label === top[0] || regions[rid].label === top[1]) && c > bestCount) {
+        bestCount = c
+        best = rid
+      }
+    }
+    if (best < 0) continue
+
+    const target = regions[best]
+    for (const p of r.list) {
+      regionId[p] = best
+      label[p] = target.label
+      if (partner[p] !== -2) {
+        partner[p] = -1
+        tp[p] = 0
+      }
       target.list.push(p)
     }
     r.alive = false
