@@ -580,7 +580,7 @@ export default function App() {
                         onClick={() => setSelected(null)}
                       >
                         <svg className="editor-svg" viewBox={`0 0 ${seg.width} ${seg.height}`} preserveAspectRatio="xMidYMid meet">
-                          <g fillRule="evenodd" strokeWidth="0.5" strokeLinejoin="round">
+                          <g fillRule="evenodd" strokeWidth="0.35" strokeLinejoin="round">
                             {visibleRegions.map((region) => (
                               <path
                                 key={region.id}

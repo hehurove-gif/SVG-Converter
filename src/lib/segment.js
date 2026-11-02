@@ -1,12 +1,13 @@
 // Motor de vectorización por zonas.
 //
 // 1. Se escala la imagen (también hacia arriba, para obtener bordes con precisión sub-píxel).
-// 2. Se obtiene una paleta en espacio Lab (perceptual) con k-means ponderado por área.
-// 3. Se asigna cada píxel a un color, se descartan los colores que solo existen como
-//    borde suavizado entre dos zonas y se reasignan los píxeles dudosos al color vecino correcto.
+// 2. La paleta se calcula SOLO con píxeles "planos" (zonas de color puro). Los píxeles de
+//    borde suavizado son mezclas de dos colores y no deben crear colores propios.
+// 3. Cada píxel de borde se explica como mezcla de dos colores de su entorno: se asigna al
+//    color dominante y se guarda cuánto tiene del otro. Así se conoce la posición REAL del borde.
 // 4. Se separan las zonas (componentes conectados) y se funden las diminutas.
-// 5. Cada zona se contornea con "marching squares" sobre una máscara suavizada y se
-//    convierte en una curva (no en escalones de píxel).
+// 5. Cada zona se contornea con "marching squares" sobre su campo de pertenencia (con valores
+//    parciales en los bordes) y el contorno se convierte en una curva.
 
 import { hexToRgb, rgbToHex } from './color.js'
 
@@ -76,15 +77,40 @@ function rgbToLab(r, g, b, out, offset) {
 
 const dist2 = (a, ai, b, bi) => (a[ai] - b[bi]) ** 2 + (a[ai + 1] - b[bi + 1]) ** 2 + (a[ai + 2] - b[bi + 2]) ** 2
 
-// ---------- Paleta ----------
+// ---------- Píxeles planos y paleta ----------
+
+// Un píxel es "plano" si es casi idéntico a sus vecinos; los de borde (mezclas) no lo son.
+function computeFlat(lab, valid, W, H, limit) {
+  const flat = new Uint8Array(W * H)
+  const lim = limit * limit
+
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      const i = y * W + x
+      if (!valid[i]) continue
+
+      let ok = true
+      const test = (j) => {
+        if (!valid[j] || dist2(lab, i * 3, lab, j * 3) > lim) ok = false
+      }
+      if (x < W - 1) test(i + 1)
+      if (ok && x > 0) test(i - 1)
+      if (ok && y < H - 1) test(i + W)
+      if (ok && y > 0) test(i - W)
+      flat[i] = ok ? 1 : 0
+    }
+  }
+
+  return flat
+}
 
 // k-means en Lab sobre un histograma de colores (ponderado por número de píxeles).
-function buildPaletteLab(data, maxColors) {
+function buildPaletteLab(data, maxColors, mask) {
   const buckets = new Map()
   let total = 0
 
   for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 30) continue
+    if (!mask[i >> 2]) continue
 
     const key = ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3)
     const bucket = buckets.get(key) || { count: 0, r: 0, g: 0, b: 0 }
@@ -137,7 +163,7 @@ function buildPaletteLab(data, maxColors) {
     pick = best
   }
 
-  let centerCount = count
+  const centerCount = count
   const assign = new Int32Array(E)
 
   for (let iteration = 0; iteration < 8; iteration += 1) {
@@ -169,7 +195,7 @@ function buildPaletteLab(data, maxColors) {
     }
   }
 
-  // Pesos finales, fusión de colores casi idénticos (ΔE < 9) y descarte de colores insignificantes.
+  // Fusión de colores casi idénticos (ΔE < 8) y descarte de colores insignificantes.
   let list = []
   const weights = new Float64Array(centerCount)
   for (let i = 0; i < E; i += 1) weights[assign[i]] += weight[i]
@@ -183,7 +209,7 @@ function buildPaletteLab(data, maxColors) {
     outer: for (let i = 0; i < list.length; i += 1) {
       for (let j = i + 1; j < list.length; j += 1) {
         const d = Math.hypot(list[i].l - list[j].l, list[i].a - list[j].a, list[i].b - list[j].b)
-        if (d < 9) {
+        if (d < 8) {
           const w = list[i].w + list[j].w
           list[i] = {
             l: (list[i].l * list[i].w + list[j].l * list[j].w) / w,
@@ -199,7 +225,7 @@ function buildPaletteLab(data, maxColors) {
     }
   }
 
-  const significant = list.filter((item) => item.w / total >= 0.0012)
+  const significant = list.filter((item) => item.w / total >= 0.0008)
   if (significant.length >= 2) list = significant
 
   const result = new Float32Array(list.length * 3)
@@ -207,100 +233,186 @@ function buildPaletteLab(data, maxColors) {
   return result
 }
 
-function assignLabels(lab, N, centers, valid) {
-  const k = centers.length / 3
+// Clasifica todos los píxeles.
+//  - Planos: al color Lab más cercano.
+//  - Borde: se explican como mezcla de dos colores presentes alrededor (o el más cercano globalmente):
+//    se proyecta el píxel sobre el segmento A–B (en RGB, donde ocurre el suavizado) y se asigna al
+//    extremo dominante; `partner`/`tp` guardan el otro color y cuánto contiene (0–0.5).
+function classify(data, lab, valid, flat, centersLab, W, H) {
+  const N = W * H
+  const k = centersLab.length / 3
   const label = new Int16Array(N).fill(-1)
-  const distance = new Float32Array(N)
+  const partner = new Int16Array(N).fill(-1)
+  const tp = new Float32Array(N)
+  const unexplained = []
 
-  for (let i = 0; i < N; i += 1) {
-    if (!valid[i]) continue
-
+  const nearestLab = (i) => {
     let best = 0
     let bestD = Infinity
     for (let c = 0; c < k; c += 1) {
-      const d = dist2(lab, i * 3, centers, c * 3)
+      const d = dist2(lab, i * 3, centersLab, c * 3)
       if (d < bestD) {
         bestD = d
         best = c
       }
     }
-    label[i] = best
-    distance[i] = bestD
+    return best
   }
 
-  return { label, distance }
-}
+  // 1) planos
+  const sums = new Float64Array(k * 4)
+  for (let i = 0; i < N; i += 1) {
+    if (!flat[i]) continue
+    const c = nearestLab(i)
+    label[i] = c
+    sums[c * 4] += data[i * 4]
+    sums[c * 4 + 1] += data[i * 4 + 1]
+    sums[c * 4 + 2] += data[i * 4 + 2]
+    sums[c * 4 + 3] += 1
+  }
 
-function boundaryFractions(label, W, H, k) {
-  const counts = new Int32Array(k)
-  const edges = new Int32Array(k)
-
-  for (let y = 0; y < H; y += 1) {
-    for (let x = 0; x < W; x += 1) {
-      const i = y * W + x
-      const own = label[i]
-      if (own < 0) continue
-
-      counts[own] += 1
-      if (x === 0 || y === 0 || x === W - 1 || y === H - 1 || label[i - 1] !== own || label[i + 1] !== own || label[i - W] !== own || label[i + W] !== own) {
-        edges[own] += 1
-      }
+  // Color RGB real de cada grupo = promedio de sus píxeles planos.
+  const rgb = new Float32Array(k * 3)
+  for (let c = 0; c < k; c += 1) {
+    const w = sums[c * 4 + 3]
+    if (w) {
+      rgb[c * 3] = sums[c * 4] / w
+      rgb[c * 3 + 1] = sums[c * 4 + 1] / w
+      rgb[c * 3 + 2] = sums[c * 4 + 2] / w
+    } else {
+      rgb[c * 3] = rgb[c * 3 + 1] = rgb[c * 3 + 2] = 128
     }
   }
 
-  return { counts, edges }
-}
-
-// Los píxeles "dudosos" (lejos de su color asignado) son bordes suavizados: se asignan al
-// color más parecido ENTRE LOS QUE REALMENTE ESTÁN CERCA, no a cualquier color de la paleta.
-function settleUncertain(label, distance, lab, centers, W, H, threshold) {
-  const out = label.slice()
-  const k = centers.length / 3
+  // 2) bordes
   const stamp = new Int32Array(k)
-  const limit = threshold * threshold
   let mark = 0
+  const R = 3
 
   for (let y = 0; y < H; y += 1) {
     for (let x = 0; x < W; x += 1) {
       const i = y * W + x
-      if (label[i] < 0 || distance[i] <= limit) continue
+      if (!valid[i] || flat[i]) continue
 
       mark += 1
-      let found = false
-      const present = []
-
-      for (let dy = -3; dy <= 3; dy += 1) {
+      const cand = []
+      for (let dy = -R; dy <= R; dy += 1) {
         const ny = y + dy
         if (ny < 0 || ny >= H) continue
-        for (let dx = -3; dx <= 3; dx += 1) {
+        for (let dx = -R; dx <= R; dx += 1) {
           const nx = x + dx
           if (nx < 0 || nx >= W) continue
           const j = ny * W + nx
-          if (label[j] < 0 || distance[j] > limit) continue
-          if (stamp[label[j]] !== mark) {
-            stamp[label[j]] = mark
-            present.push(label[j])
-            found = true
+          if (!flat[j]) continue
+          const l = label[j]
+          if (stamp[l] !== mark) {
+            stamp[l] = mark
+            cand.push(l)
           }
         }
       }
 
-      if (!found) continue
+      const near = nearestLab(i)
+      if (stamp[near] !== mark) cand.push(near)
+      const local = cand.length
 
-      let best = label[i]
-      let bestD = Infinity
-      for (const c of present) {
-        const d = dist2(lab, i * 3, centers, c * 3)
-        if (d < bestD) {
-          bestD = d
-          best = c
+      const r = data[i * 4]
+      const g = data[i * 4 + 1]
+      const b = data[i * 4 + 2]
+
+      let bestRes = Infinity
+      let bestA = near
+      let bestB = near
+      let bestT = 0
+
+      for (let u = 0; u < cand.length; u += 1) {
+        const A = cand[u]
+        const ar = rgb[A * 3]
+        const ag = rgb[A * 3 + 1]
+        const ab = rgb[A * 3 + 2]
+
+        for (let v = u; v < cand.length; v += 1) {
+          const B = cand[v]
+          let t = 0
+          let res
+
+          if (B === A) {
+            res = Math.hypot(r - ar, g - ag, b - ab)
+          } else {
+            const dr = rgb[B * 3] - ar
+            const dg = rgb[B * 3 + 1] - ag
+            const db = rgb[B * 3 + 2] - ab
+            const dd = dr * dr + dg * dg + db * db
+            t = dd ? ((r - ar) * dr + (g - ag) * dg + (b - ab) * db) / dd : 0
+            t = t < 0 ? 0 : t > 1 ? 1 : t
+            res = Math.hypot(r - (ar + t * dr), g - (ag + t * dg), b - (ab + t * db))
+            // Se prefieren los pares formados por colores realmente presentes en el entorno.
+            if (u >= local || v >= local) res += 5
+          }
+
+          if (res < bestRes) {
+            bestRes = res
+            bestA = A
+            bestB = B
+            bestT = t
+          }
         }
       }
-      out[i] = best
+
+      if (bestA === bestB) {
+        label[i] = bestA
+      } else if (bestT < 0.5) {
+        label[i] = bestA
+        partner[i] = bestB
+        tp[i] = bestT
+      } else {
+        label[i] = bestB
+        partner[i] = bestA
+        tp[i] = 1 - bestT
+      }
+
+      if (bestRes > 34) unexplained.push(i)
     }
   }
 
-  return out
+  return { label, partner, tp, rgb, unexplained }
+}
+
+// Colores que ningún par de colores explica (detalles finos de otro color): candidatos a paleta.
+function extraColors(data, unexplained, centersLab, validCount, limit) {
+  if (unexplained.length < Math.max(12, validCount * 0.0015)) return []
+
+  const buckets = new Map()
+  for (const i of unexplained) {
+    const key = ((data[i * 4] >> 4) << 8) | ((data[i * 4 + 1] >> 4) << 4) | (data[i * 4 + 2] >> 4)
+    const bucket = buckets.get(key) || { count: 0, r: 0, g: 0, b: 0 }
+    bucket.count += 1
+    bucket.r += data[i * 4]
+    bucket.g += data[i * 4 + 1]
+    bucket.b += data[i * 4 + 2]
+    buckets.set(key, bucket)
+  }
+
+  const picks = []
+  const probe = new Float32Array(3)
+  const sorted = [...buckets.values()].sort((a, b) => b.count - a.count)
+
+  for (const bucket of sorted) {
+    if (picks.length >= limit || bucket.count < Math.max(8, validCount * 0.0012)) break
+
+    const r = Math.round(bucket.r / bucket.count)
+    const g = Math.round(bucket.g / bucket.count)
+    const b = Math.round(bucket.b / bucket.count)
+    rgbToLab(r, g, b, probe, 0)
+
+    let far = true
+    for (let c = 0; c < centersLab.length / 3; c += 1) if (dist2(probe, 0, centersLab, c * 3) < 14 * 14) far = false
+    for (const pick of picks) if (dist2(probe, 0, pick.lab, 0) < 14 * 14) far = false
+
+    if (far) picks.push({ lab: Float32Array.from(probe) })
+  }
+
+  return picks.map((pick) => pick.lab)
 }
 
 // Elimina píxeles aislados y líneas de 1px sin tocar trazos gruesos.
@@ -587,15 +699,18 @@ function loopToPath(points, radius) {
   return `${d}Z`
 }
 
-// Nivel de suavizado: radio del blur (cajas), umbral del contorno, tolerancia y radio de curvas.
+// Nivel de suavizado: cajas de blur (radio y pasadas), umbral del contorno, tolerancia y radio de curvas.
+// Incluso "Sin suavizar" sigue el borde real con precisión sub-píxel (sin escalones).
 const SMOOTH_LEVELS = [
-  { blur: 0, threshold: 0.5, epsilon: 0.45, radius: 0 },
-  { blur: 1, threshold: 0.44, epsilon: 0.4, radius: 2.5 },
-  { blur: 1, threshold: 0.43, epsilon: 0.55, radius: 4 },
-  { blur: 2, threshold: 0.42, epsilon: 0.8, radius: 6.5 }
+  { blur: 0, passes: 0, threshold: 0.5, epsilon: 0.22, radius: 0 },
+  { blur: 1, passes: 1, threshold: 0.5, epsilon: 0.3, radius: 2.5 },
+  { blur: 1, passes: 2, threshold: 0.49, epsilon: 0.45, radius: 4 },
+  { blur: 2, passes: 2, threshold: 0.48, epsilon: 0.75, radius: 6.5 }
 ]
 
-function traceRegion(list, id, regionId, W, level) {
+// Campo de pertenencia de una zona: 1 dentro, 0 fuera y valores parciales en los píxeles de borde
+// (según la mezcla de color medida), de modo que el contorno cae donde está el borde real.
+function traceRegion(list, id, zoneLabel, regionId, partner, tp, W, H, level) {
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
@@ -610,24 +725,44 @@ function traceRegion(list, id, regionId, W, level) {
     if (y > maxY) maxY = y
   }
 
-  const pad = level.blur * 2 + 2
+  const pad = level.blur * level.passes + 3
   const gw = maxX - minX + 1 + pad * 2
   const gh = maxY - minY + 1 + pad * 2
   let field = new Float32Array(gw * gh)
+  const at = (x, y) => (y - minY + pad) * gw + (x - minX + pad)
 
   for (const p of list) {
     const x = p % W
     const y = (p - x) / W
-    field[(y - minY + pad) * gw + (x - minX + pad)] = 1
+    field[at(x, y)] = partner[p] >= 0 ? 1 - tp[p] : 1
+  }
+
+  // Vecinos de otra zona que contienen algo de este color (su "partner") aportan la fracción parcial.
+  for (const p of list) {
+    const x = p % W
+    const y = (p - x) / W
+    const around = [
+      x > 0 ? p - 1 : -1,
+      x < W - 1 ? p + 1 : -1,
+      y > 0 ? p - W : -1,
+      y < H - 1 ? p + W : -1
+    ]
+
+    for (const q of around) {
+      if (q < 0 || regionId[q] === id || partner[q] !== zoneLabel) continue
+      const qx = q % W
+      const qy = (q - qx) / W
+      const index = at(qx, qy)
+      if (tp[q] > field[index]) field[index] = tp[q]
+    }
   }
 
   if (level.blur > 0) {
-    let scratch = new Float32Array(gw * gh)
-    for (let pass = 0; pass < 2; pass += 1) {
+    const scratch = new Float32Array(gw * gh)
+    for (let pass = 0; pass < level.passes; pass += 1) {
       boxBlur(field, scratch, gw, gh, level.blur, true)
       boxBlur(scratch, field, gw, gh, level.blur, false)
     }
-    scratch = null
   }
 
   const offsetX = minX - pad + 0.5
@@ -635,8 +770,8 @@ function traceRegion(list, id, regionId, W, level) {
   const parts = []
 
   for (const loop of marchingSquares(field, gw, gh, level.threshold)) {
-    const points = simplifyLoop(loop.map((p) => [p[0] + offsetX, p[1] + offsetY]), level.epsilon)
-    if (points.length < 3 || polygonArea(points) < 3) continue
+    const points = simplifyLoop(loop.map((point) => [point[0] + offsetX, point[1] + offsetY]), level.epsilon)
+    if (points.length < 3 || polygonArea(points) < 2) continue
 
     const path = loopToPath(points, level.radius)
     if (path) parts.push(path)
@@ -648,7 +783,7 @@ function traceRegion(list, id, regionId, W, level) {
 
 // ---------- Segmentación principal ----------
 
-const DETAIL_AREA = [0.004, 0.002, 0.001, 0.0004, 0.00012]
+const DETAIL_AREA = [0.0012, 0.0005, 0.00022, 0.00008, 0.00002]
 const DETAIL_PASSES = [2, 1, 1, 1, 0]
 
 // Divide la imagen en zonas: cada zona es un grupo conectado de píxeles del mismo color de paleta.
@@ -658,8 +793,6 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
   const N = W * H
 
   const empty = { width: W, height: H, palette: [], regions: [], transparentRatio: 1, borderOpaque: 0 }
-  let centers = buildPaletteLab(data, colors)
-  if (!centers) return empty
 
   const valid = new Uint8Array(N)
   const lab = new Float32Array(N * 3)
@@ -672,50 +805,68 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
     rgbToLab(data[i * 4], data[i * 4 + 1], data[i * 4 + 2], lab, i * 3)
   }
 
+  if (!opaque) return empty
   const transparentRatio = 1 - opaque / N
 
-  // Colores que solo existen como borde entre otras zonas (p. ej. marrón entre amarillo y negro) se descartan.
-  let assigned = assignLabels(lab, N, centers, valid)
-  for (let iteration = 0; iteration < 3 && centers.length / 3 > 2; iteration += 1) {
-    const k = centers.length / 3
-    const { counts, edges } = boundaryFractions(assigned.label, W, H, k)
-    const keep = []
+  // Paleta a partir de píxeles planos (si casi no hay, de todos).
+  let flat = computeFlat(lab, valid, W, H, 4)
+  let flatCount = 0
+  for (let i = 0; i < N; i += 1) flatCount += flat[i]
+  if (flatCount < Math.max(200, opaque * 0.02)) {
+    flat = valid
+    flatCount = opaque
+  }
 
-    for (let c = 0; c < k; c += 1) {
-      const fringe = counts[c] < opaque * 0.03 && edges[c] / Math.max(1, counts[c]) > 0.82
-      if (!fringe) keep.push(c)
-    }
+  let centers = buildPaletteLab(data, colors, flat)
+  if (!centers) return empty
 
-    if (keep.length === k || keep.length < 2) break
+  // Clasificación; si quedan detalles finos que ninguna mezcla explica, se añaden sus colores.
+  let result = classify(data, lab, valid, flat, centers, W, H)
+  const extras = extraColors(data, result.unexplained, centers, opaque, Math.max(1, Math.round(colors * 0.25)))
 
-    const next = new Float32Array(keep.length * 3)
-    keep.forEach((c, index) => next.set(centers.subarray(c * 3, c * 3 + 3), index * 3))
-    centers = next
-    assigned = assignLabels(lab, N, centers, valid)
+  if (extras.length) {
+    const grown = new Float32Array(centers.length + extras.length * 3)
+    grown.set(centers)
+    extras.forEach((color, index) => grown.set(color, centers.length + index * 3))
+    centers = grown
+    result = classify(data, lab, valid, flat, centers, W, H)
   }
 
   const k = centers.length / 3
-  let label = settleUncertain(assigned.label, assigned.distance, lab, centers, W, H, 12)
+  let { label } = result
+  const { partner, tp, rgb } = result
 
-  // Color final de cada grupo = promedio real (RGB) de sus píxeles seguros.
-  const sums = new Float64Array(k * 4)
+  // Los grupos sin píxeles planos (añadidos por detalle fino) toman el promedio de sus píxeles.
+  const fallback = new Float64Array(k * 4)
   for (let i = 0; i < N; i += 1) {
     const l = label[i]
-    if (l < 0 || assigned.distance[i] > 144) continue
-    sums[l * 4] += data[i * 4]
-    sums[l * 4 + 1] += data[i * 4 + 1]
-    sums[l * 4 + 2] += data[i * 4 + 2]
-    sums[l * 4 + 3] += 1
+    if (l < 0) continue
+    fallback[l * 4] += data[i * 4]
+    fallback[l * 4 + 1] += data[i * 4 + 1]
+    fallback[l * 4 + 2] += data[i * 4 + 2]
+    fallback[l * 4 + 3] += 1
   }
 
   const palette = []
   for (let c = 0; c < k; c += 1) {
-    const w = sums[c * 4 + 3]
-    palette.push(w ? rgbToHex(sums[c * 4] / w, sums[c * 4 + 1] / w, sums[c * 4 + 2] / w) : '#808080')
+    const hasFlat = rgb[c * 3] !== 128 || rgb[c * 3 + 1] !== 128 || rgb[c * 3 + 2] !== 128
+    const w = fallback[c * 4 + 3]
+    palette.push(
+      hasFlat || !w
+        ? rgbToHex(rgb[c * 3], rgb[c * 3 + 1], rgb[c * 3 + 2])
+        : rgbToHex(fallback[c * 4] / w, fallback[c * 4 + 1] / w, fallback[c * 4 + 2] / w)
+    )
   }
 
   for (let pass = 0; pass < DETAIL_PASSES[detail - 1]; pass += 1) {
-    label = despeckle(label, W, H, k)
+    const cleaned = despeckle(label, W, H, k)
+    for (let i = 0; i < N; i += 1) {
+      if (cleaned[i] !== label[i]) {
+        partner[i] = -1
+        tp[i] = 0
+      }
+    }
+    label = cleaned
   }
 
   // Componentes conectados (4 vecinos) por color de paleta.
@@ -760,7 +911,7 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
   }
 
   // Funde las zonas diminutas con la vecina con la que comparten más borde.
-  const minPixels = Math.max(6, Math.round(N * DETAIL_AREA[detail - 1]))
+  const minPixels = Math.max(5, Math.round(N * DETAIL_AREA[detail - 1]))
   const small = regions.filter((r) => r.list.length < minPixels).sort((a, b) => a.list.length - b.list.length)
 
   for (const r of small) {
@@ -794,6 +945,9 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
     const target = regions[best]
     for (const p of r.list) {
       regionId[p] = best
+      label[p] = target.label
+      partner[p] = -1
+      tp[p] = 0
       target.list.push(p)
     }
     r.alive = false
@@ -827,7 +981,7 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
       label: r.label,
       area: r.list.length,
       borderPx: borderPixels.get(r.id) || 0,
-      path: traceRegion(r.list, r.id, regionId, W, level)
+      path: traceRegion(r.list, r.id, r.label, regionId, partner, tp, W, H, level)
     }))
     .filter((r) => r.path)
     .sort((a, b) => b.area - a.area)
@@ -868,7 +1022,7 @@ export function buildSvg(seg, fills, hidden, size) {
       return `<path d="${r.path}" fill="${fill}" stroke="${fill}"/>`
     })
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${seg.width} ${seg.height}" width="${outW}" height="${outH}"><g fill-rule="evenodd" stroke-width="0.5" stroke-linejoin="round">${paths.join('')}</g></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${seg.width} ${seg.height}" width="${outW}" height="${outH}"><g fill-rule="evenodd" stroke-width="0.35" stroke-linejoin="round">${paths.join('')}</g></svg>`
 }
 
 export { hexToRgb }
