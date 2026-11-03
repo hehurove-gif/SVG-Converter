@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { clamp, hexToRgb, isValidHex, mixHex, normalizeHex } from './lib/color.js'
-import { analyzeImage, buildSvg, detectBackground, gradientDef, loadImage, segmentImage } from './lib/segment.js'
+import { analyzeImage, buildSvg, detectBackground, gradientDef, loadImage } from './lib/segment.js'
+import { vectorize } from './lib/vectorize.js'
 import { bake, initialEdit, isFollower, resolveView } from './lib/view.js'
 import { clearWork, loadWork, saveWork } from './lib/store.js'
 
@@ -256,7 +257,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [params, setParams] = useState({ colors: 12, detail: 3, smooth: 2 })
+  const [params, setParams] = useState({ colors: 12, detail: 3, smooth: 2, resolution: 1, fixed: '' })
+  const [progress, setProgress] = useState('')
   const [runId, setRunId] = useState(0)
   const [applied, setApplied] = useState(null)
   const [advice, setAdvice] = useState(null)
@@ -306,10 +308,11 @@ export default function App() {
         const isNewImage = autoTuneRef.current || Boolean(pendingRestoreRef.current)
         if (autoTuneRef.current) {
           autoTuneRef.current = false
-          used = { ...analyzeImage(image).params }
+          used = { resolution: 1, fixed: '', ...analyzeImage(image).params }
           setParams(used)
         }
-        const result = segmentImage(image, used)
+        setProgress('Preparando la imagen')
+        const result = await vectorize(image, used, (text) => !cancelled && setProgress(text))
         setApplied(used)
         if (cancelled) return
 
@@ -384,7 +387,7 @@ export default function App() {
     if (!saved) return
     pendingRestoreRef.current = saved
     autoTuneRef.current = false
-    setParams(saved.params)
+    setParams({ resolution: 1, fixed: '', ...saved.params })
     setFileName(saved.fileName || '')
     setSaved(null)
     setImageSrc(saved.imageSrc)
@@ -1106,9 +1109,29 @@ export default function App() {
                     <input type="range" min="0" max="3" step="1" value={params.smooth} onChange={(e) => setParam('smooth', Number(e.target.value))} />
                     <small className="slider-help">{SMOOTH_HELP[params.smooth]}</small>
                   </label>
+                  <label className="tool-slider">
+                    <span>
+                      Resolución de análisis <strong>{['Normal', 'Alta', 'Muy alta'][(params.resolution || 1) - 1]}</strong>
+                    </span>
+                    <input type="range" min="1" max="3" step="1" value={params.resolution || 1} onChange={(e) => setParam('resolution', Number(e.target.value))} />
+                    <small className="slider-help">
+                      {['Rápida; suficiente para casi todo.', 'Más precisa en imágenes grandes con detalle fino. Tarda un poco más.', 'La máxima precisión; puede tardar varios segundos en imágenes grandes.'][(params.resolution || 1) - 1]}
+                    </small>
+                  </label>
+                  <label className="tool-slider">
+                    <span>Usar mis colores (opcional)</span>
+                    <textarea
+                      className="fixed-colors"
+                      rows={2}
+                      placeholder="#FF0000 #FFFFFF #111111"
+                      value={params.fixed || ''}
+                      onChange={(e) => setParam('fixed', e.target.value)}
+                    />
+                    <small className="slider-help">Escribe o pega códigos de color y la imagen se vectoriza usando solo esos. Déjalo vacío para detectar los colores solo.</small>
+                  </label>
                   <button type="button" className={`tool-btn ${pending ? 'primary' : ''}`} onClick={() => setRunId((n) => n + 1)} disabled={!pending || busy}>
                     <span className="tool-icon">{pending ? '✦' : '✓'}</span>
-                    {busy ? 'Vectorizando…' : pending ? 'Aplicar ajustes' : 'Ajustes aplicados'}
+                    {busy ? `${progress || 'Vectorizando'}…` : pending ? 'Aplicar ajustes' : 'Ajustes aplicados'}
                   </button>
                   <details className="guide">
                     <summary>¿Cuándo usar cada ajuste?</summary>
@@ -1208,7 +1231,7 @@ export default function App() {
                           type="button"
                           className="advice-btn"
                           onClick={() => {
-                            setParams(advice.action.params)
+                            setParams({ ...paramsRef.current, ...advice.action.params })
                             setRunId((n) => n + 1)
                           }}
                         >

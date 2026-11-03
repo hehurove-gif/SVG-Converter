@@ -9,7 +9,7 @@
 // 5. Cada zona se contornea con "marching squares" sobre su campo de pertenencia (con valores
 //    parciales en los bordes) y el contorno se convierte en una curva.
 
-import { hexToRgb, rgbToHex } from './color.js'
+import { hexToRgb, isValidHex, normalizeHex, rgbToHex } from './color.js'
 
 // ---------- Carga de imágenes ----------
 
@@ -33,7 +33,7 @@ export function loadImage(src) {
 }
 
 // Lee los píxeles. Escala hacia abajo si es grande y hacia arriba (máx. 3x) si es pequeña.
-function readPixels(image, maxSize) {
+export function readPixels(image, maxSize) {
   const scale = Math.min(3, maxSize / Math.max(image.width, image.height))
   const width = Math.max(1, Math.round(image.width * scale))
   const height = Math.max(1, Math.round(image.height * scale))
@@ -1065,10 +1065,18 @@ function sampleList(list, n) {
 }
 
 // Divide la imagen en zonas: cada zona es un grupo conectado de píxeles del mismo color de paleta.
-export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSize = 560 } = {}) {
-  const pixels = readPixels(image, maxSize)
+export function segmentImage(image, options = {}) {
+  return segmentPixels(readPixels(image, options.maxSize || 560), options)
+}
+
+// Parte pura del análisis (corre en un Web Worker): recibe los píxeles ya leídos.
+// `fixedColors` (lista de #RRGGBB) obliga a usar exactamente esos colores; `onProgress(texto)` avisa de la etapa.
+export function segmentPixels(pixels, { colors = 12, detail = 3, smooth = 2, fixedColors = null, onProgress = null } = {}) {
   const { width: W, height: H, data } = pixels
   const N = W * H
+  const sc = Math.max(1, Math.max(W, H) / 560)
+  const stage = (text) => onProgress && onProgress(text)
+  stage('Preparando la imagen')
 
   const empty = { width: W, height: H, palette: [], regions: [], transparentRatio: 1, borderOpaque: 0, stats: { flatRatio: 0, photo: false } }
 
@@ -1086,7 +1094,12 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
   if (!opaque) return empty
   const transparentRatio = 1 - opaque / N
 
-  if (DENOISE[detail - 1]) denoise(data, lab, valid, W, H, DENOISE[detail - 1])
+  if (DENOISE[detail - 1]) {
+    stage('Limpiando ruido')
+    const cfg = DENOISE[detail - 1]
+    denoise(data, lab, valid, W, H, { ...cfg, radius: Math.round(cfg.radius * sc) })
+  }
+  stage('Detectando colores')
 
   // Paleta a partir de píxeles planos (si casi no hay, de todos).
   let flat = computeFlat(data, lab, valid, W, H, 4)
@@ -1107,12 +1120,23 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
     flatCount = opaque
   }
 
-  let centers = buildPaletteLab(data, colors, flat, photo)
+  const fixed = (fixedColors || []).filter((hex) => isValidHex(hex)).map((hex) => normalizeHex(hex))
+  let centers
+  if (fixed.length) {
+    centers = new Float32Array(fixed.length * 3)
+    fixed.forEach((hex, index) => {
+      const c = hexToRgb(hex)
+      rgbToLab(c.r, c.g, c.b, centers, index * 3)
+    })
+  } else {
+    centers = buildPaletteLab(data, colors, flat, photo)
+  }
   if (!centers) return empty
+  stage('Clasificando píxeles')
 
   // Clasificación; si quedan detalles finos que ninguna mezcla explica, se añaden sus colores.
   let result = classify(data, lab, valid, flat, centers, W, H)
-  const extras = extraColors(data, result.unexplained, centers, opaque, Math.max(1, Math.round(colors * 0.25)))
+  const extras = fixed.length ? [] : extraColors(data, result.unexplained, centers, opaque, Math.max(1, Math.round(colors * 0.25)))
 
   if (extras.length) {
     const grown = new Float32Array(centers.length + extras.length * 3)
@@ -1148,6 +1172,12 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
     )
   }
 
+  // Con colores fijos, la paleta es exactamente la pedida.
+  fixed.forEach((hex, index) => {
+    if (index < palette.length) palette[index] = hex
+  })
+
+  stage('Separando zonas')
   for (let pass = 0; pass < DETAIL_PASSES[detail - 1]; pass += 1) {
     const cleaned = despeckle(label, W, H, k)
     for (let i = 0; i < N; i += 1) {
@@ -1401,7 +1431,9 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
     if (mixInfo.has(info.a) || mixInfo.has(info.b)) mixInfo.delete(id)
   }
 
-  const level = SMOOTH_LEVELS[smooth]
+  stage('Trazando contornos')
+  const base = SMOOTH_LEVELS[smooth]
+  const level = sc > 1 ? { ...base, blur: base.blur > 0 ? Math.max(1, Math.round(base.blur * sc)) : 0, epsilon: base.epsilon * sc, radius: base.radius * sc } : base
 
   const alive = regions.filter((r) => r.alive && r.list.length)
   const paths = traceRegions(alive, regionId, partner, tp, W, H, level)
