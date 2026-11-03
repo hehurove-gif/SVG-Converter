@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clamp, hexToRgb, isValidHex, normalizeHex } from './lib/color.js'
-import { analyzeImage, buildSvg, detectBackground, loadImage, segmentImage } from './lib/segment.js'
+import { analyzeImage, buildSvg, detectBackground, gradientDef, loadImage, segmentImage } from './lib/segment.js'
+import { initialEdit, isFollower, resolveView } from './lib/view.js'
+import { clearWork, loadWork, saveWork } from './lib/store.js'
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/x-icon', 'image/vnd.microsoft.icon']
 
@@ -38,12 +40,6 @@ const SMOOTH_HELP = [
 ]
 const CALLOUT_WIDTH = 252
 
-function initialEdit(seg) {
-  const fills = {}
-  for (const region of seg.regions) fills[region.id] = seg.palette[region.label]
-  return { fills, hidden: {} }
-}
-
 // Al volver a vectorizar con otros ajustes, las zonas cambian. Cada zona nueva hereda el cambio
 // (color o eliminada) de la zona anterior que ocupaba la mayor parte de su superficie.
 function carryEdits(oldSeg, oldEdit, newSeg) {
@@ -74,7 +70,10 @@ function carryEdits(oldSeg, oldEdit, newSeg) {
 
     if (best === 'same' || bestVotes <= region.samples.length / 2) continue
     if (best === 'hidden') next.hidden[region.id] = true
-    else next.fills[region.id] = best
+    else {
+      next.fills[region.id] = best
+      if (region.mix) next.pinned[region.id] = true
+    }
     kept += 1
   }
 
@@ -139,7 +138,7 @@ function HexInput({ value, onCommit }) {
 }
 
 // Globo con flecha que apunta al lugar exacto donde se hizo clic.
-function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onClose }) {
+function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onMerge, onClose }) {
   const picks = selected.picked?.length || 1
   const { x, y, w } = selected
   const left = clamp(x - CALLOUT_WIDTH / 2, 6, Math.max(6, w - CALLOUT_WIDTH - 6))
@@ -182,7 +181,10 @@ function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onCl
           </button>
         </div>
 
-        <button type="button" className="callout-delete" onClick={onDelete}>
+        <button type="button" className="callout-merge" onClick={onMerge} title="Atajo: M">
+          Fusionar con la vecina
+        </button>
+        <button type="button" className="callout-delete" onClick={onDelete} title="Atajo: Supr">
           Eliminar {count > 1 ? `estas ${count} zonas` : 'esta zona'}
         </button>
       </div>
@@ -231,13 +233,15 @@ export default function App() {
   const paramsRef = useRef(params)
   paramsRef.current = params
   const [seg, setSeg] = useState(null)
-  const [edit, setEdit] = useState({ fills: {}, hidden: {} })
+  const [edit, setEdit] = useState({ fills: {}, hidden: {}, pinned: {}, grads: {}, adjust: { h: 0, s: 0, l: 0 } })
   const [history, setHistory] = useState([])
   const [future, setFuture] = useState([])
   const actionsRef = useRef({})
   const liveRef = useRef({ seg: null, edit: null })
   const [backup, setBackup] = useState(null)
   const [toast, setToast] = useState('')
+  const [saved, setSaved] = useState(null)
+  const pendingRestoreRef = useRef(null)
   const clipRef = useRef('')
   const toastTimer = useRef(null)
   const [mode, setMode] = useState('group')
@@ -261,7 +265,7 @@ export default function App() {
 
         // Imagen recién subida: elige ajustes según su tipo (logo/ilustración o foto).
         let used = { ...paramsRef.current }
-        const isNewImage = autoTuneRef.current
+        const isNewImage = autoTuneRef.current || Boolean(pendingRestoreRef.current)
         if (autoTuneRef.current) {
           autoTuneRef.current = false
           used = { ...analyzeImage(image).params }
@@ -276,7 +280,20 @@ export default function App() {
         setImageSize({ width: image.width, height: image.height })
         const previous = liveRef.current
         const hadEdits = !isNewImage && previous.seg && previous.edit
-        const carried = hadEdits ? carryEdits(previous.seg, previous.edit, result) : { edit: initialEdit(result), kept: 0, total: 0 }
+        let carried = hadEdits ? carryEdits(previous.seg, previous.edit, result) : { edit: initialEdit(result), kept: 0, total: 0 }
+
+        // Trabajo guardado: se recupera si la vectorización coincide con la que se guardó.
+        const restore = pendingRestoreRef.current
+        pendingRestoreRef.current = null
+        let restoredNote = ''
+        if (restore) {
+          if (restore.sig === result.regions.length) {
+            carried = { edit: { ...initialEdit(result), ...restore.edit }, kept: 0, total: 0 }
+            restoredNote = 'Trabajo recuperado con todos tus cambios.'
+          } else {
+            restoredNote = 'Se recuperó la imagen, pero no se pudieron restaurar los cambios de color.'
+          }
+        }
 
         setSeg(result)
         setEdit(carried.edit)
@@ -285,13 +302,14 @@ export default function App() {
         setSelected(null)
         setBackup(carried.total ? { seg: previous.seg, edit: previous.edit, params: previous.params } : null)
         setNotice(
-          !result.regions.length
+          restoredNote ||
+            (!result.regions.length
             ? 'No se encontraron zonas de color en la imagen.'
             : carried.total
               ? carried.kept
                 ? `Ajustes aplicados. Se conservaron tus cambios en ${carried.kept} ${carried.kept === 1 ? 'zona' : 'zonas'}; revisa que todo siga como lo dejaste.`
                 : 'Ajustes aplicados. Las zonas cambiaron tanto que no se pudieron conservar tus cambios de color.'
-              : ''
+              : '')
         )
       } catch (err) {
         if (!cancelled) setError(err?.message || 'No se pudo vectorizar la imagen.')
@@ -307,12 +325,53 @@ export default function App() {
   }, [imageSrc, runId])
 
   useEffect(() => {
+    loadWork().then((work) => {
+      if (work?.imageSrc && work?.edit) setSaved(work)
+    })
+  }, [])
+
+  // Autoguardado (solo si hay cambios hechos por el usuario).
+  useEffect(() => {
+    if (!seg || !imageSrc || !applied) return undefined
+    const changed = JSON.stringify(edit) !== JSON.stringify(initialEdit(seg))
+    if (!changed) return undefined
+
+    const timer = setTimeout(() => {
+      saveWork({ imageSrc, fileName, params: applied, edit, sig: seg.regions.length, savedAt: Date.now() })
+    }, 900)
+    return () => clearTimeout(timer)
+  }, [seg, edit, imageSrc, fileName, applied])
+
+  const restoreWork = () => {
+    if (!saved) return
+    pendingRestoreRef.current = saved
+    autoTuneRef.current = false
+    setParams(saved.params)
+    setFileName(saved.fileName || '')
+    setSaved(null)
+    setImageSrc(saved.imageSrc)
+    setRunId((n) => n + 1)
+  }
+
+  const discardWork = () => {
+    setSaved(null)
+    clearWork()
+  }
+
+  useEffect(() => {
     const onKey = (event) => {
       if (event.key === 'Escape') setSelected(null)
 
       // Ctrl/Cmd+Z deshace, Ctrl/Cmd+Y (o Ctrl/Cmd+Shift+Z) rehace. En campos de texto se deja el atajo nativo.
       const target = event.target
       const typing = target instanceof HTMLElement && (target.isContentEditable || target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && !target.classList.contains('hex-input') && !['range', 'color', 'checkbox', 'file'].includes(target.type)))
+      if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        if (event.key === 'Delete' || event.key === 'Backspace') {
+          if (actionsRef.current.deleteSelected?.()) event.preventDefault()
+        } else if (event.key.toLowerCase() === 'm') {
+          actionsRef.current.mergeSelected?.()
+        }
+      }
       if (typing || !(event.ctrlKey || event.metaKey) || event.altKey) return
 
       const key = event.key.toLowerCase()
@@ -353,7 +412,8 @@ export default function App() {
     }
   }, [])
 
-  const visibleRegions = useMemo(() => (seg ? seg.regions.filter((r) => !edit.hidden[r.id]) : []), [seg, edit.hidden])
+  const view = useMemo(() => (seg ? resolveView(seg, edit) : { fills: {}, hidden: {}, grads: {} }), [seg, edit])
+  const visibleRegions = useMemo(() => (seg ? seg.regions.filter((r) => !view.hidden[r.id]) : []), [seg, view])
 
   // Colores actuales agrupados: todas las zonas con exactamente el mismo color.
   const groups = useMemo(() => {
@@ -363,10 +423,11 @@ export default function App() {
     let total = 0
 
     for (const region of seg.regions) {
+      if (isFollower(region, edit)) continue
       total += region.area
-      if (edit.hidden[region.id]) continue
+      if (view.hidden[region.id]) continue
 
-      const hex = edit.fills[region.id]
+      const hex = view.fills[region.id]
       const group = map.get(hex) || { hex, area: 0, ids: [] }
       group.area += region.area
       group.ids.push(region.id)
@@ -376,7 +437,7 @@ export default function App() {
     return [...map.values()]
       .sort((a, b) => b.area - a.area)
       .map((group) => ({ ...group, percent: total ? (group.area / total) * 100 : 0 }))
-  }, [seg, edit])
+  }, [seg, edit, view])
 
   const highlightIds = useMemo(() => {
     const ids = new Set()
@@ -387,7 +448,7 @@ export default function App() {
 
   liveRef.current = { seg, edit, params: applied }
   const hiddenCount = Object.keys(edit.hidden).length
-  const selectedColor = selected ? edit.fills[selected.id] : null
+  const selectedColor = selected ? view.fills[selected.id] : null
 
   const snapshot = () => {
     setFuture([])
@@ -425,7 +486,7 @@ export default function App() {
 
   const copyColor = () => {
     if (!selected) return null
-    const hex = edit.fills[selected.id]
+    const hex = view.fills[selected.id]
     if (!hex) return null
     clipRef.current = hex
     showToast(`Color ${hex} copiado`)
@@ -443,7 +504,18 @@ export default function App() {
     return true
   }
 
-  actionsRef.current = { undo, redo, copyColor, pasteColor }
+  actionsRef.current = {
+    undo,
+    redo,
+    copyColor,
+    pasteColor,
+    deleteSelected: () => {
+      if (!selected) return false
+      hideIds(selected.scope)
+      return true
+    },
+    mergeSelected: () => selected && mergeIds(selected.scope)
+  }
 
   const resetAll = () => {
     if (!seg) return
@@ -457,8 +529,10 @@ export default function App() {
   const computeScope = (ids, nextMode) => {
     const list = Array.isArray(ids) ? ids : [ids]
     if (nextMode === 'region' || !seg) return list
-    const colors = new Set(list.map((id) => edit.fills[id]))
-    return seg.regions.filter((r) => !edit.hidden[r.id] && (list.includes(r.id) || colors.has(edit.fills[r.id]))).map((r) => r.id)
+    const colors = new Set(list.map((id) => view.fills[id]))
+    return seg.regions
+      .filter((r) => !view.hidden[r.id] && (list.includes(r.id) || (!isFollower(r, edit) && colors.has(view.fills[r.id]))))
+      .map((r) => r.id)
   }
 
   const showToast = (text) => {
@@ -511,9 +585,41 @@ export default function App() {
   const applyColor = (ids, hex) => {
     setEdit((current) => {
       const fills = { ...current.fills }
-      for (const id of ids) fills[id] = hex
-      return { ...current, fills }
+      const pinned = { ...current.pinned }
+      for (const id of ids) {
+        fills[id] = hex
+        pinned[id] = true
+      }
+      return { ...current, fills, pinned }
     })
+  }
+
+  // Pinta cada zona elegida con el color de la vecina con la que comparte más borde (sin dejar huecos).
+  const mergeIds = (ids) => {
+    if (!seg) return
+    const set = new Set(ids)
+    const fills = { ...edit.fills }
+    const pinned = { ...edit.pinned }
+    let merged = 0
+
+    for (const id of ids) {
+      const region = seg.regions.find((r) => r.id === id)
+      const target = region?.nb.find(([nid]) => !set.has(nid) && !view.hidden[nid])
+      if (!target) continue
+      fills[id] = view.fills[target[0]]
+      pinned[id] = true
+      merged += 1
+    }
+
+    if (!merged) {
+      showToast('No hay una zona vecina visible con la que fusionar.')
+      return
+    }
+
+    snapshot()
+    setEdit((current) => ({ ...current, fills, pinned }))
+    setSelected(null)
+    showToast(`${merged} ${merged === 1 ? 'zona fusionada' : 'zonas fusionadas'} con su vecina`)
   }
 
   const hideIds = (ids) => {
@@ -570,7 +676,7 @@ export default function App() {
     const reader = new FileReader()
     reader.onload = () => {
       setSeg(null)
-      setEdit({ fills: {}, hidden: {} })
+      setEdit({ fills: {}, hidden: {}, pinned: {}, grads: {}, adjust: { h: 0, s: 0, l: 0 } })
       setHistory([])
       setFuture([])
       setSelected(null)
@@ -594,7 +700,7 @@ export default function App() {
     loadFile(event.dataTransfer?.files?.[0])
   }
 
-  const currentSvg = () => (seg ? buildSvg(seg, edit.fills, edit.hidden, imageSize) : '')
+  const currentSvg = () => (seg ? buildSvg(seg, view.fills, view.hidden, imageSize, view.grads) : '')
 
   const downloadSvg = () => {
     const svg = currentSvg()
@@ -683,6 +789,23 @@ export default function App() {
             </div>
             <span className="badge">{imageSize.width ? `${imageSize.width} × ${imageSize.height}px` : 'Sin imagen'}</span>
           </div>
+
+          {!imageSrc && saved && (
+            <div className="restore-box" role="status">
+              <div>
+                <strong>Tienes un trabajo guardado{saved.fileName ? `: «${saved.fileName}»` : ''}</strong>
+                <p>Se guardó automáticamente en este navegador{saved.savedAt ? ` el ${new Date(saved.savedAt).toLocaleString()}` : ''}. Tu imagen nunca sale de tu equipo.</p>
+              </div>
+              <div className="advice-actions">
+                <button type="button" className="advice-btn" onClick={restoreWork}>
+                  Restaurar
+                </button>
+                <button type="button" className="advice-close" aria-label="Descartar" onClick={discardWork}>
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
 
           {!imageSrc ? (
             <div
@@ -877,13 +1000,20 @@ export default function App() {
                         onClick={() => setSelected(null)}
                       >
                         <svg className="editor-svg" viewBox={`0 0 ${seg.width} ${seg.height}`} preserveAspectRatio="xMidYMid meet">
+                          {Object.keys(view.grads).length > 0 && (
+                            <defs>
+                              {Object.entries(view.grads).map(([id, g]) => (
+                                <g key={id} dangerouslySetInnerHTML={{ __html: gradientDef(id, g).replace(`id="g${id}"`, `id="zg${id}"`) }} />
+                              ))}
+                            </defs>
+                          )}
                           <g fillRule="evenodd" strokeWidth="0.6" strokeLinejoin="round">
                             {visibleRegions.map((region) => (
                               <path
                                 key={region.id}
                                 d={region.path}
-                                fill={edit.fills[region.id]}
-                                stroke={edit.fills[region.id]}
+                                fill={view.grads[region.id] ? `url(#zg${region.id})` : view.fills[region.id]}
+                                stroke={view.grads[region.id] ? `url(#zg${region.id})` : view.fills[region.id]}
                                 className="zone"
                                 onClick={(event) => selectRegion(region, event)}
                               />
@@ -915,6 +1045,7 @@ export default function App() {
                             onColor={(hex) => applyColor(selected.scope, hex)}
                             onMode={changeMode}
                             onDelete={() => hideIds(selected.scope)}
+                            onMerge={() => mergeIds(selected.scope)}
                             onClose={() => setSelected(null)}
                           />
                         )}

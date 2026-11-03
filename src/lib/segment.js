@@ -1340,6 +1340,67 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
     touch(y * W + W - 1)
   }
 
+  // Vecindad entre zonas (para fusionar y para reconocer franjas de mezcla).
+  const adjacency = new Map()
+  const link = (a, b) => {
+    if (a < 0 || b < 0 || a === b) return
+    let m = adjacency.get(a)
+    if (!m) adjacency.set(a, (m = new Map()))
+    m.set(b, (m.get(b) || 0) + 1)
+    m = adjacency.get(b)
+    if (!m) adjacency.set(b, (m = new Map()))
+    m.set(a, (m.get(a) || 0) + 1)
+  }
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      const p = y * W + x
+      if (x < W - 1) link(regionId[p], regionId[p + 1])
+      if (y < H - 1) link(regionId[p], regionId[p + W])
+    }
+  }
+
+  // Franjas de mezcla: zonas pequeñas y alargadas cuyo color es una mezcla de dos vecinas distintas
+  // (el suavizado del borde original). Al recolorear las vecinas, estas franjas siguen su color.
+  const centersMix = palette.map((hex) => hexToRgb(hex))
+  const mixInfo = new Map()
+  for (const r of regions) {
+    if (!r.alive || !r.list.length || r.list.length > N * 0.02) continue
+    const neighbors = adjacency.get(r.id)
+    if (!neighbors || neighbors.size < 2) continue
+
+    let boundary = 0
+    for (const c of neighbors.values()) boundary += c
+    if (r.list.length / Math.max(1, boundary) > 3.5) continue
+
+    const ranked = [...neighbors.entries()].sort((a, b) => b[1] - a[1])
+    const [ida, ca] = ranked[0]
+    const [idb, cb] = ranked[1]
+    if ((ca + cb) / boundary < 0.75) continue
+
+    const la = regions[ida].label
+    const lb = regions[idb].label
+    if (la === lb || r.label === la || r.label === lb) continue
+
+    const A = centersMix[la]
+    const B = centersMix[lb]
+    const C = centersMix[r.label]
+    const dr = B.r - A.r
+    const dg = B.g - A.g
+    const db = B.b - A.b
+    const dd = dr * dr + dg * dg + db * db
+    if (dd < 900) continue
+
+    const t = ((C.r - A.r) * dr + (C.g - A.g) * dg + (C.b - A.b) * db) / dd
+    const residual = Math.hypot(C.r - (A.r + t * dr), C.g - (A.g + t * dg), C.b - (A.b + t * db))
+    if (t < 0.12 || t > 0.88 || residual > 14) continue
+
+    mixInfo.set(r.id, { a: ida, b: idb, t: Math.round(t * 100) / 100 })
+  }
+  // Una franja no puede seguir a otra franja.
+  for (const [id, info] of [...mixInfo]) {
+    if (mixInfo.has(info.a) || mixInfo.has(info.b)) mixInfo.delete(id)
+  }
+
   const level = SMOOTH_LEVELS[smooth]
 
   const alive = regions.filter((r) => r.alive && r.list.length)
@@ -1351,6 +1412,8 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
       label: r.label,
       area: r.list.length,
       samples: sampleList(r.list, 25),
+      mix: mixInfo.get(r.id) || null,
+      nb: [...(adjacency.get(r.id) || new Map()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 6),
       borderPx: borderPixels.get(r.id) || 0,
       path: paths.get(r.id)
     }))
@@ -1382,18 +1445,33 @@ export function detectBackground(seg) {
   return seg.regions.filter((r) => r.label === best && r.borderPx > 0).map((r) => r.id)
 }
 
+// Definición SVG de un degradado lineal por zona (ángulo en grados, sobre la caja de la zona).
+export function gradientDef(id, g) {
+  const rad = (g.angle * Math.PI) / 180
+  const dx = Math.cos(rad) / 2
+  const dy = Math.sin(rad) / 2
+  const f = (v) => (0.5 + v).toFixed(3)
+  const e = (v) => (0.5 - v).toFixed(3)
+  return `<linearGradient id="g${id}" x1="${e(dx)}" y1="${e(dy)}" x2="${f(dx)}" y2="${f(dy)}"><stop offset="0" stop-color="${g.from}"/><stop offset="1" stop-color="${g.to}"/></linearGradient>`
+}
+
 // Genera el archivo SVG final con los colores editados y sin las zonas eliminadas.
-export function buildSvg(seg, fills, hidden, size) {
+export function buildSvg(seg, fills, hidden, size, grads = {}) {
   const outW = size?.width || seg.width
   const outH = size?.height || seg.height
+  const defs = []
   const paths = seg.regions
     .filter((r) => !hidden[r.id])
     .map((r) => {
       const fill = fills[r.id]
+      if (grads[r.id]) {
+        defs.push(gradientDef(r.id, grads[r.id]))
+        return `<path d="${r.path}" fill="url(#g${r.id})" stroke="url(#g${r.id})"/>`
+      }
       return `<path d="${r.path}" fill="${fill}" stroke="${fill}"/>`
     })
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${seg.width} ${seg.height}" width="${outW}" height="${outH}"><g fill-rule="evenodd" stroke-width="0.6" stroke-linejoin="round">${paths.join('')}</g></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${seg.width} ${seg.height}" width="${outW}" height="${outH}">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}<g fill-rule="evenodd" stroke-width="0.6" stroke-linejoin="round">${paths.join('')}</g></svg>`
 }
 
 export { hexToRgb }
