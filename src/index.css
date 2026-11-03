@@ -1166,3 +1166,5 @@ h2 {
 .guide summary { cursor: pointer; color: #67e8f9; font-weight: 600; }
 .guide ul { margin: 0.5rem 0 0; padding-left: 1.05rem; display: grid; gap: 0.4rem; line-height: 1.4; }
 .guide strong { color: #e2e8f0; }
+
+.notice-link { display: inline; margin-left: 0.6rem; padding: 0; border: 0; background: none; color: #67e8f9; text-decoration: underline; cursor: pointer; font: inherit; font-weight: 600; }

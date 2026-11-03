@@ -44,6 +44,43 @@ function initialEdit(seg) {
   return { fills, hidden: {} }
 }
 
+// Al volver a vectorizar con otros ajustes, las zonas cambian. Cada zona nueva hereda el cambio
+// (color o eliminada) de la zona anterior que ocupaba la mayor parte de su superficie.
+function carryEdits(oldSeg, oldEdit, newSeg) {
+  const next = initialEdit(newSeg)
+  if (!oldSeg?.regionMap || oldSeg.width !== newSeg.width || oldSeg.height !== newSeg.height) return { edit: next, kept: 0, total: 0 }
+
+  const base = initialEdit(oldSeg)
+  const changedOld = oldSeg.regions.filter((r) => oldEdit.hidden[r.id] || oldEdit.fills[r.id] !== base.fills[r.id]).length
+  let kept = 0
+
+  for (const region of newSeg.regions) {
+    const votes = new Map()
+    for (const p of region.samples) {
+      const oldId = oldSeg.regionMap[p]
+      if (oldId < 0) continue
+      const key = oldEdit.hidden[oldId] ? 'hidden' : oldEdit.fills[oldId] !== base.fills[oldId] ? oldEdit.fills[oldId] : 'same'
+      votes.set(key, (votes.get(key) || 0) + 1)
+    }
+
+    let best = 'same'
+    let bestVotes = 0
+    for (const [key, count] of votes) {
+      if (count > bestVotes) {
+        best = key
+        bestVotes = count
+      }
+    }
+
+    if (best === 'same' || bestVotes <= region.samples.length / 2) continue
+    if (best === 'hidden') next.hidden[region.id] = true
+    else next.fills[region.id] = best
+    kept += 1
+  }
+
+  return { edit: next, kept, total: changedOld }
+}
+
 async function exportSvgToPng(svgString, filename) {
   const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -196,6 +233,8 @@ export default function App() {
   const [history, setHistory] = useState([])
   const [future, setFuture] = useState([])
   const actionsRef = useRef({})
+  const liveRef = useRef({ seg: null, edit: null })
+  const [backup, setBackup] = useState(null)
   const [mode, setMode] = useState('group')
   const [selected, setSelected] = useState(null)
   const [hoverHex, setHoverHex] = useState(null)
@@ -217,6 +256,7 @@ export default function App() {
 
         // Imagen recién subida: elige ajustes según su tipo (logo/ilustración o foto).
         let used = { ...paramsRef.current }
+        const isNewImage = autoTuneRef.current
         if (autoTuneRef.current) {
           autoTuneRef.current = false
           used = { ...analyzeImage(image).params }
@@ -229,12 +269,25 @@ export default function App() {
         setAdvice(buildAdvice(result, used))
 
         setImageSize({ width: image.width, height: image.height })
+        const previous = liveRef.current
+        const hadEdits = !isNewImage && previous.seg && previous.edit
+        const carried = hadEdits ? carryEdits(previous.seg, previous.edit, result) : { edit: initialEdit(result), kept: 0, total: 0 }
+
         setSeg(result)
-        setEdit(initialEdit(result))
+        setEdit(carried.edit)
         setHistory([])
         setFuture([])
         setSelected(null)
-        setNotice(result.regions.length ? '' : 'No se encontraron zonas de color en la imagen.')
+        setBackup(carried.total ? { seg: previous.seg, edit: previous.edit, params: previous.params } : null)
+        setNotice(
+          !result.regions.length
+            ? 'No se encontraron zonas de color en la imagen.'
+            : carried.total
+              ? carried.kept
+                ? `Ajustes aplicados. Se conservaron tus cambios en ${carried.kept} ${carried.kept === 1 ? 'zona' : 'zonas'}; revisa que todo siga como lo dejaste.`
+                : 'Ajustes aplicados. Las zonas cambiaron tanto que no se pudieron conservar tus cambios de color.'
+              : ''
+        )
       } catch (err) {
         if (!cancelled) setError(err?.message || 'No se pudo vectorizar la imagen.')
       } finally {
@@ -307,6 +360,7 @@ export default function App() {
     return ids
   }, [selected, hoverHex, groups])
 
+  liveRef.current = { seg, edit, params: applied }
   const hiddenCount = Object.keys(edit.hidden).length
   const selectedColor = selected ? edit.fills[selected.id] : null
 
@@ -647,7 +701,7 @@ export default function App() {
                   </details>
                   <p className="hint">
                     {pending
-                      ? 'Hay ajustes sin aplicar. Al aplicarlos se vuelve a vectorizar y se pierden las ediciones.'
+                      ? 'Hay ajustes sin aplicar. Al aplicarlos se vuelve a vectorizar y se intentan conservar tus cambios de color y las zonas eliminadas.'
                       : 'La imagen se vectoriza sola al subirla. Mueve los ajustes y pulsa «Aplicar ajustes» para repetirlo.'}
                   </p>
                 </div>
@@ -665,7 +719,30 @@ export default function App() {
 
               <div className="stage-column">
                 {error && <div className="error-box">{error}</div>}
-                {notice && <div className="notice-box">{notice}</div>}
+                {notice && (
+                  <div className="notice-box">
+                    {notice}
+                    {backup && (
+                      <button
+                        type="button"
+                        className="notice-link"
+                        onClick={() => {
+                          setSeg(backup.seg)
+                          setEdit(backup.edit)
+                          setParams(backup.params)
+                          setApplied(backup.params)
+                          setHistory([])
+                          setFuture([])
+                          setSelected(null)
+                          setBackup(null)
+                          setNotice('Volviste a la versión anterior con tus cambios.')
+                        }}
+                      >
+                        Volver a la versión anterior
+                      </button>
+                    )}
+                  </div>
+                )}
                 {advice && !busy && (
                   <div className="advice-box" role="status">
                     <div>

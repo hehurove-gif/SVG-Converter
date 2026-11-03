@@ -1056,6 +1056,14 @@ export function analyzeImage(image) {
   }
 }
 
+// Hasta `n` píxeles repartidos por la zona (sirven para reconocerla después de volver a vectorizar).
+function sampleList(list, n) {
+  if (list.length <= n) return list.slice()
+  const out = []
+  for (let i = 0; i < n; i += 1) out.push(list[Math.floor(((i + 0.5) * list.length) / n)])
+  return out
+}
+
 // Divide la imagen en zonas: cada zona es un grupo conectado de píxeles del mismo color de paleta.
 export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSize = 560 } = {}) {
   const pixels = readPixels(image, maxSize)
@@ -1342,13 +1350,14 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
       id: r.id,
       label: r.label,
       area: r.list.length,
+      samples: sampleList(r.list, 25),
       borderPx: borderPixels.get(r.id) || 0,
       path: paths.get(r.id)
     }))
     .filter((r) => r.path)
     .sort((a, b) => b.area - a.area)
 
-  return { width: W, height: H, palette, regions: output, transparentRatio, borderOpaque, stats: { flatRatio, photo } }
+  return { width: W, height: H, palette, regions: output, regionMap: regionId, transparentRatio, borderOpaque, stats: { flatRatio, photo } }
 }
 
 // Zonas que forman el fondo: el color que más rodea los bordes de la imagen.
