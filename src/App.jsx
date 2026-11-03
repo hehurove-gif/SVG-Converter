@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clamp, hexToRgb, isValidHex, normalizeHex } from './lib/color.js'
-import { buildSvg, detectBackground, loadImage, segmentImage } from './lib/segment.js'
+import { analyzeImage, buildSvg, detectBackground, loadImage, segmentImage } from './lib/segment.js'
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/x-icon', 'image/vnd.microsoft.icon']
 
@@ -128,6 +128,30 @@ function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onCl
   )
 }
 
+// Mensaje amable cuando la imagen es difícil, para que no parezca que la herramienta falló.
+function buildAdvice(result, used) {
+  if (!result.regions.length) return null
+  const maxed = used.colors >= 28 && used.detail >= 5 && used.smooth === 0
+
+  if (result.stats?.photo) {
+    return {
+      title: 'Esta imagen es una foto con muchos degradados',
+      text: 'Los vectores funcionan mejor con logos e ilustraciones de colores planos. En una foto el resultado es una versión estilo pintura y es normal que se pierdan detalles muy finos; no es un error de la herramienta.',
+      action: maxed ? null : { label: 'Probar con más detalle', params: { colors: Math.min(32, Math.max(used.colors, 24) + 4), detail: 5, smooth: 0 } }
+    }
+  }
+
+  if (result.regions.length > 260) {
+    return {
+      title: `Salieron ${result.regions.length} zonas`,
+      text: 'La imagen tiene muchos tonos parecidos. Para un SVG más ligero y fácil de editar puedes bajar los colores o el detalle.',
+      action: { label: 'Simplificar', params: { colors: Math.max(6, Math.round(used.colors * 0.6)), detail: Math.max(1, used.detail - 1), smooth: Math.max(used.smooth, 2) } }
+    }
+  }
+
+  return null
+}
+
 export default function App() {
   const inputRef = useRef(null)
   const stageRef = useRef(null)
@@ -140,6 +164,8 @@ export default function App() {
   const [params, setParams] = useState({ colors: 12, detail: 3, smooth: 2 })
   const [runId, setRunId] = useState(0)
   const [applied, setApplied] = useState(null)
+  const [advice, setAdvice] = useState(null)
+  const autoTuneRef = useRef(false)
   const paramsRef = useRef(params)
   paramsRef.current = params
   const [seg, setSeg] = useState(null)
@@ -164,10 +190,18 @@ export default function App() {
         const image = await loadImage(imageSrc)
         if (cancelled) return
 
-        const used = { ...paramsRef.current }
+        // Imagen recién subida: elige ajustes según su tipo (logo/ilustración o foto).
+        let used = { ...paramsRef.current }
+        if (autoTuneRef.current) {
+          autoTuneRef.current = false
+          used = { ...analyzeImage(image).params }
+          setParams(used)
+        }
         const result = segmentImage(image, used)
         setApplied(used)
         if (cancelled) return
+
+        setAdvice(buildAdvice(result, used))
 
         setImageSize({ width: image.width, height: image.height })
         setSeg(result)
@@ -361,6 +395,8 @@ export default function App() {
       setNotice('')
       setFileName(file.name.replace(/\.[^/.]+$/, ''))
       setZoom(1)
+      setAdvice(null)
+      autoTuneRef.current = true
       setImageSrc(String(reader.result))
     }
     reader.readAsDataURL(file)
@@ -559,6 +595,31 @@ export default function App() {
               <div className="stage-column">
                 {error && <div className="error-box">{error}</div>}
                 {notice && <div className="notice-box">{notice}</div>}
+                {advice && !busy && (
+                  <div className="advice-box" role="status">
+                    <div>
+                      <strong>{advice.title}</strong>
+                      <p>{advice.text}</p>
+                    </div>
+                    <div className="advice-actions">
+                      {advice.action && (
+                        <button
+                          type="button"
+                          className="advice-btn"
+                          onClick={() => {
+                            setParams(advice.action.params)
+                            setRunId((n) => n + 1)
+                          }}
+                        >
+                          {advice.action.label}
+                        </button>
+                      )}
+                      <button type="button" className="advice-close" aria-label="Cerrar aviso" onClick={() => setAdvice(null)}>
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="editor-card vector-card">
                   <div className="preview-label-row">

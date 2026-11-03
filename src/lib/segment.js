@@ -96,6 +96,18 @@ function denoise(data, lab, valid, W, H, config) {
   const solid = new Uint8Array(N)
   for (let i = 0; i < N; i += 1) solid[i] = valid[i] && data[i * 4 + 3] >= 250 ? 1 : 0
 
+  // Protegidos: píxeles junto a un cambio fuerte de color a 2 px (ojos, cejas, dientes, bordes finos).
+  const protect = new Uint8Array(N)
+  const strong = (config.tol * 1.6) ** 2
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) {
+      const i = y * W + x
+      if (!solid[i]) continue
+      const far = (j) => solid[j] && dist2(lab, i * 3, lab, j * 3) > strong
+      if ((x > 1 && far(i - 2)) || (x < W - 2 && far(i + 2)) || (y > 1 && far(i - 2 * W)) || (y < H - 2 && far(i + 2 * W))) protect[i] = 1
+    }
+  }
+
   let rgb = new Float32Array(N * 3)
   for (let i = 0; i < N; i += 1) {
     rgb[i * 3] = data[i * 4]
@@ -115,7 +127,7 @@ function denoise(data, lab, valid, W, H, config) {
           const i = y * W + x
           const i3 = i * 3
 
-          if (!solid[i]) {
+          if (!solid[i] || protect[i]) {
             out[i3] = rgb[i3]
             out[i3 + 1] = rgb[i3 + 1]
             out[i3 + 2] = rgb[i3 + 2]
@@ -153,7 +165,7 @@ function denoise(data, lab, valid, W, H, config) {
   }
 
   for (let i = 0; i < N; i += 1) {
-    if (!solid[i]) continue
+    if (!solid[i] || protect[i]) continue
     data[i * 4] = Math.round(rgb[i * 3])
     data[i * 4 + 1] = Math.round(rgb[i * 3 + 1])
     data[i * 4 + 2] = Math.round(rgb[i * 3 + 2])
@@ -189,7 +201,7 @@ function computeFlat(data, lab, valid, W, H, limit) {
 }
 
 // k-means en Lab sobre un histograma de colores (ponderado por número de píxeles).
-function buildPaletteLab(data, maxColors, mask) {
+function buildPaletteLab(data, maxColors, mask, photo = false) {
   const buckets = new Map()
   let total = 0
 
@@ -293,7 +305,7 @@ function buildPaletteLab(data, maxColors, mask) {
     outer: for (let i = 0; i < list.length; i += 1) {
       for (let j = i + 1; j < list.length; j += 1) {
         const d = Math.hypot(list[i].l - list[j].l, list[i].a - list[j].a, list[i].b - list[j].b)
-        if (d < 8) {
+        if (d < (photo ? 6 : 8)) {
           const w = list[i].w + list[j].w
           list[i] = {
             l: (list[i].l * list[i].w + list[j].l * list[j].w) / w,
@@ -309,7 +321,7 @@ function buildPaletteLab(data, maxColors, mask) {
     }
   }
 
-  const significant = list.filter((item) => item.w / total >= 0.0008)
+  const significant = list.filter((item) => item.w / total >= (photo ? 0.0003 : 0.0008))
   if (significant.length >= 2) list = significant
 
   const result = new Float32Array(list.length * 3)
@@ -1001,13 +1013,56 @@ function traceRegions(zones, regionId, partner, tp, W, H, level) {
 const DETAIL_AREA = [0.0012, 0.0005, 0.00022, 0.00008, 0.00002]
 const DETAIL_PASSES = [2, 1, 1, 1, 0]
 
+// Cuánto de la imagen cubren sus 16 colores más frecuentes (cuantizados). Logos e ilustraciones: casi todo.
+// Fotos con degradados: poco.
+function colorCoverage(data, valid, N, opaque) {
+  const buckets = new Map()
+  for (let i = 0; i < N; i += 1) {
+    if (!valid[i] || data[i * 4 + 3] < 250) continue
+    const key = ((data[i * 4] >> 4) << 8) | ((data[i * 4 + 1] >> 4) << 4) | (data[i * 4 + 2] >> 4)
+    buckets.set(key, (buckets.get(key) || 0) + 1)
+  }
+  const top = [...buckets.values()].sort((a, b) => b - a).slice(0, 16)
+  return top.reduce((sum, c) => sum + c, 0) / opaque
+}
+
+// Por debajo de este porcentaje de píxeles planos la imagen se trata como foto (degradados, grano).
+const PHOTO_TOP_COVERAGE = 0.6
+
+// Ajustes sugeridos según el tipo de imagen: logos e ilustraciones (colores planos) o fotos.
+export function analyzeImage(image) {
+  const { width: W, height: H, data } = readPixels(image, 420)
+  const N = W * H
+  const valid = new Uint8Array(N)
+  const lab = new Float32Array(N * 3)
+  let opaque = 0
+
+  for (let i = 0; i < N; i += 1) {
+    if (data[i * 4 + 3] < 20) continue
+    valid[i] = 1
+    opaque += 1
+    rgbToLab(data[i * 4], data[i * 4 + 1], data[i * 4 + 2], lab, i * 3)
+  }
+
+  if (!opaque) return { photo: false, flatRatio: 1, params: { colors: 12, detail: 3, smooth: 2 } }
+
+  const flatRatio = colorCoverage(data, valid, N, opaque)
+  const photo = flatRatio < PHOTO_TOP_COVERAGE
+
+  return {
+    photo,
+    flatRatio,
+    params: photo ? { colors: 20, detail: 4, smooth: 1 } : { colors: 12, detail: 3, smooth: 2 }
+  }
+}
+
 // Divide la imagen en zonas: cada zona es un grupo conectado de píxeles del mismo color de paleta.
 export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSize = 560 } = {}) {
   const pixels = readPixels(image, maxSize)
   const { width: W, height: H, data } = pixels
   const N = W * H
 
-  const empty = { width: W, height: H, palette: [], regions: [], transparentRatio: 1, borderOpaque: 0 }
+  const empty = { width: W, height: H, palette: [], regions: [], transparentRatio: 1, borderOpaque: 0, stats: { flatRatio: 0, photo: false } }
 
   const valid = new Uint8Array(N)
   const lab = new Float32Array(N * 3)
@@ -1029,12 +1084,22 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
   let flat = computeFlat(data, lab, valid, W, H, 4)
   let flatCount = 0
   for (let i = 0; i < N; i += 1) flatCount += flat[i]
+  const flatRatio = colorCoverage(data, valid, N, opaque)
+  const photo = flatRatio < PHOTO_TOP_COVERAGE
+
+  // En fotos casi no hay píxeles planos (todo es degradado): se aceptan más para que los detalles
+  // pequeños (dientes, brillos) también aporten color a la paleta.
+  if (photo) {
+    flat = computeFlat(data, lab, valid, W, H, 7)
+    flatCount = 0
+    for (let i = 0; i < N; i += 1) flatCount += flat[i]
+  }
   if (flatCount < Math.max(200, opaque * 0.02)) {
     flat = valid
     flatCount = opaque
   }
 
-  let centers = buildPaletteLab(data, colors, flat)
+  let centers = buildPaletteLab(data, colors, flat, photo)
   if (!centers) return empty
 
   // Clasificación; si quedan detalles finos que ninguna mezcla explica, se añaden sus colores.
@@ -1283,7 +1348,7 @@ export function segmentImage(image, { colors = 12, detail = 3, smooth = 2, maxSi
     .filter((r) => r.path)
     .sort((a, b) => b.area - a.area)
 
-  return { width: W, height: H, palette, regions: output, transparentRatio, borderOpaque }
+  return { width: W, height: H, palette, regions: output, transparentRatio, borderOpaque, stats: { flatRatio, photo } }
 }
 
 // Zonas que forman el fondo: el color que más rodea los bordes de la imagen.
