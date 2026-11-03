@@ -993,6 +993,7 @@ export default function App() {
                 <div className="upload-icon">⤴</div>
                 <p>Arrastra una imagen aquí o haz clic para elegirla</p>
                 <span>PNG, JPG, WEBP, GIF, BMP o ICO</span>
+                <span className="privacy-note">🔒 Tu imagen se procesa en tu navegador y no se sube a ningún servidor.</span>
               </div>
             </div>
           ) : (
