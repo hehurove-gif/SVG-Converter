@@ -36,3 +36,14 @@ export function resolveView(seg, edit) {
 
   return { fills, hidden, grads }
 }
+
+// Fija el ajuste global dentro de los colores (para poder seguir editando colores sueltos sin desfases).
+export function bake(edit) {
+  const adjust = edit.adjust
+  if (!adjust || (!adjust.h && !adjust.s && !adjust.l)) return edit
+  const fills = {}
+  for (const id of Object.keys(edit.fills)) fills[id] = adjustHex(edit.fills[id], adjust)
+  const grads = {}
+  for (const id of Object.keys(edit.grads || {})) grads[id] = { ...edit.grads[id], to: adjustHex(edit.grads[id].to, adjust) }
+  return { ...edit, fills, grads, adjust: { h: 0, s: 0, l: 0 } }
+}

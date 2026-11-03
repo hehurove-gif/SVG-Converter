@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { clamp, hexToRgb, isValidHex, normalizeHex } from './lib/color.js'
 import { analyzeImage, buildSvg, detectBackground, gradientDef, loadImage, segmentImage } from './lib/segment.js'
-import { initialEdit, isFollower, resolveView } from './lib/view.js'
+import { bake, initialEdit, isFollower, resolveView } from './lib/view.js'
 import { clearWork, loadWork, saveWork } from './lib/store.js'
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/x-icon', 'image/vnd.microsoft.icon']
@@ -80,7 +80,7 @@ function carryEdits(oldSeg, oldEdit, newSeg) {
   return { edit: next, kept, total: changedOld }
 }
 
-async function exportSvgToPng(svgString, filename) {
+async function exportSvgToPng(svgString, filename, { scale = 1, background = '' } = {}) {
   const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
   const url = URL.createObjectURL(blob)
 
@@ -92,12 +92,19 @@ async function exportSvgToPng(svgString, filename) {
       img.src = url
     })
 
+    const baseW = img.naturalWidth || 1200
+    const baseH = img.naturalHeight || 1200
+    const factor = Math.min(scale, 8192 / Math.max(baseW, baseH))
     const canvas = document.createElement('canvas')
-    canvas.width = img.naturalWidth || 1200
-    canvas.height = img.naturalHeight || 1200
+    canvas.width = Math.round(baseW * factor)
+    canvas.height = Math.round(baseH * factor)
 
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Canvas no disponible')
+    if (background) {
+      ctx.fillStyle = background
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+    }
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
 
     const link = document.createElement('a')
@@ -138,7 +145,7 @@ function HexInput({ value, onCommit }) {
 }
 
 // Globo con flecha que apunta al lugar exacto donde se hizo clic.
-function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onMerge, onClose }) {
+function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onMerge, onClose, onPickScreen }) {
   const picks = selected.picked?.length || 1
   const { x, y, w } = selected
   const left = clamp(x - CALLOUT_WIDTH / 2, 6, Math.max(6, w - CALLOUT_WIDTH - 6))
@@ -169,7 +176,14 @@ function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onMe
           </button>
         </div>
 
-        <HexInput value={color} onCommit={onColor} />
+        <div className="hex-row">
+          <HexInput value={color} onCommit={onColor} />
+          {typeof window !== 'undefined' && 'EyeDropper' in window && (
+            <button type="button" className="eyedropper-btn" onClick={onPickScreen} title="Cuentagotas: toma un color de cualquier punto de la pantalla (imagen original incluida)">
+              ⌖
+            </button>
+          )}
+        </div>
         {picks > 1 && <p className="callout-multi">{picks} zonas elegidas: el color se aplica a todas. Ctrl + clic para añadir o quitar.</p>}
 
         <div className="segmented small" role="group" aria-label="Alcance del cambio">
@@ -241,6 +255,13 @@ export default function App() {
   const [backup, setBackup] = useState(null)
   const [toast, setToast] = useState('')
   const [saved, setSaved] = useState(null)
+  const [multiMode, setMultiMode] = useState(false)
+  const [peek, setPeek] = useState(false)
+  const [pngScale, setPngScale] = useState(2)
+  const [pngBg, setPngBg] = useState('transparent')
+  const wrapRef = useRef(null)
+  const zoomAnchor = useRef(null)
+  const dragRef = useRef({ active: false, moved: false, x: 0, y: 0, left: 0, top: 0 })
   const pendingRestoreRef = useRef(null)
   const clipRef = useRef('')
   const toastTimer = useRef(null)
@@ -370,6 +391,8 @@ export default function App() {
           if (actionsRef.current.deleteSelected?.()) event.preventDefault()
         } else if (event.key.toLowerCase() === 'm') {
           actionsRef.current.mergeSelected?.()
+        } else if (event.key.toLowerCase() === 'o') {
+          setPeek(true)
         }
       }
       if (typing || !(event.ctrlKey || event.metaKey) || event.altKey) return
@@ -400,17 +423,89 @@ export default function App() {
       if (isTyping(event.target)) return
       if (actionsRef.current.pasteColor?.(event.clipboardData?.getData('text'))) event.preventDefault()
     }
+    const onKeyUp = (event) => {
+      if (event.key.toLowerCase() === 'o') setPeek(false)
+    }
+    window.addEventListener('keyup', onKeyUp)
     window.addEventListener('keydown', onKey)
     window.addEventListener('resize', onResize)
     document.addEventListener('copy', onCopy)
     document.addEventListener('paste', onPaste)
     return () => {
       window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('resize', onResize)
       document.removeEventListener('copy', onCopy)
       document.removeEventListener('paste', onPaste)
     }
   }, [])
+
+  // Zoom con Ctrl + rueda (o pellizco) centrado en el cursor, y arrastre para moverse.
+  useEffect(() => {
+    const wrap = wrapRef.current
+    if (!wrap) return undefined
+
+    const onWheel = (event) => {
+      if (!(event.ctrlKey || event.metaKey)) return
+      event.preventDefault()
+      const stage = stageRef.current
+      if (!stage) return
+      const rect = stage.getBoundingClientRect()
+      const wrapRect = wrap.getBoundingClientRect()
+      zoomAnchor.current = { rx: (event.clientX - rect.left) / rect.width, ry: (event.clientY - rect.top) / rect.height, mx: event.clientX - wrapRect.left, my: event.clientY - wrapRect.top }
+      setZoom((z) => Math.min(8, Math.max(1, Math.round(z * Math.exp(-event.deltaY * 0.0015) * 100) / 100)))
+    }
+
+    const onDown = (event) => {
+      if (event.button !== 0 && event.button !== 1) return
+      dragRef.current = { active: true, moved: false, x: event.clientX, y: event.clientY, left: wrap.scrollLeft, top: wrap.scrollTop }
+    }
+    const onMove = (event) => {
+      const d = dragRef.current
+      if (!d.active || !wrap.classList.contains('zoomed')) return
+      const dx = event.clientX - d.x
+      const dy = event.clientY - d.y
+      if (!d.moved && Math.hypot(dx, dy) < 6) return
+      d.moved = true
+      wrap.scrollLeft = d.left - dx
+      wrap.scrollTop = d.top - dy
+    }
+    const onUp = () => {
+      dragRef.current.active = false
+    }
+    const onClickCapture = (event) => {
+      if (dragRef.current.moved) {
+        event.stopPropagation()
+        event.preventDefault()
+        dragRef.current.moved = false
+      }
+    }
+
+    wrap.addEventListener('wheel', onWheel, { passive: false })
+    wrap.addEventListener('pointerdown', onDown)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    wrap.addEventListener('click', onClickCapture, true)
+    return () => {
+      wrap.removeEventListener('wheel', onWheel)
+      wrap.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      wrap.removeEventListener('click', onClickCapture, true)
+    }
+  }, [seg])
+
+  useLayoutEffect(() => {
+    const anchor = zoomAnchor.current
+    const wrap = wrapRef.current
+    const stage = stageRef.current
+    if (!anchor || !wrap || !stage) return
+    zoomAnchor.current = null
+    const rect = stage.getBoundingClientRect()
+    const wrapRect = wrap.getBoundingClientRect()
+    wrap.scrollLeft += rect.left + anchor.rx * rect.width - (wrapRect.left + anchor.mx)
+    wrap.scrollTop += rect.top + anchor.ry * rect.height - (wrapRect.top + anchor.my)
+  }, [zoom])
 
   const view = useMemo(() => (seg ? resolveView(seg, edit) : { fills: {}, hidden: {}, grads: {} }), [seg, edit])
   const visibleRegions = useMemo(() => (seg ? seg.regions.filter((r) => !view.hidden[r.id]) : []), [seg, view])
@@ -549,7 +644,7 @@ export default function App() {
     snapshot()
 
     // Ctrl/Cmd + clic: añade o quita zonas de la selección para cambiarles el color juntas.
-    if ((event.ctrlKey || event.metaKey) && selected) {
+    if ((event.ctrlKey || event.metaKey || multiMode) && selected) {
       const current = selected.picked || [selected.id]
       const picked = current.includes(region.id) ? current.filter((id) => id !== region.id) : [...current, region.id]
       if (!picked.length) {
@@ -583,7 +678,8 @@ export default function App() {
   }
 
   const applyColor = (ids, hex) => {
-    setEdit((current) => {
+    setEdit((raw) => {
+      const current = bake(raw)
       const fills = { ...current.fills }
       const pinned = { ...current.pinned }
       for (const id of ids) {
@@ -598,8 +694,9 @@ export default function App() {
   const mergeIds = (ids) => {
     if (!seg) return
     const set = new Set(ids)
-    const fills = { ...edit.fills }
-    const pinned = { ...edit.pinned }
+    const baked = bake(edit)
+    const fills = { ...baked.fills }
+    const pinned = { ...baked.pinned }
     let merged = 0
 
     for (const id of ids) {
@@ -617,7 +714,7 @@ export default function App() {
     }
 
     snapshot()
-    setEdit((current) => ({ ...current, fills, pinned }))
+    setEdit({ ...baked, fills, pinned })
     setSelected(null)
     showToast(`${merged} ${merged === 1 ? 'zona fusionada' : 'zonas fusionadas'} con su vecina`)
   }
@@ -655,7 +752,8 @@ export default function App() {
     setSelectedPreset(name)
 
     const preset = palettePresets[name]
-    setEdit((current) => {
+    setEdit((raw) => {
+      const current = bake(raw)
       const fills = { ...current.fills }
       groups.forEach((group, index) => {
         for (const id of group.ids) fills[id] = normalizeHex(preset[index % preset.length])
@@ -714,12 +812,57 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
+  const writeClipboard = async (text, done) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast(done)
+    } catch {
+      setError('El navegador no permitió copiar. Prueba de nuevo o revisa los permisos del portapapeles.')
+    }
+  }
+
+  const copySvgCode = () => {
+    const svg = currentSvg()
+    if (svg) writeClipboard(svg, 'Código SVG copiado')
+  }
+
+  const copyPalette = () => writeClipboard(groups.map((g) => g.hex).join('\n'), `Paleta de ${groups.length} colores copiada`)
+
+  // Pega una lista de códigos hex y los asigna a los colores actuales en orden (de más a menos área).
+  const pastePalette = async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      const colors = (text.match(/#?[0-9a-fA-F]{6}\b/g) || []).map((c) => normalizeHex(c))
+      if (!colors.length) {
+        showToast('El portapapeles no tiene códigos de color (#RRGGBB).')
+        return
+      }
+      snapshot()
+      setEdit((raw) => {
+        const current = bake(raw)
+        const fills = { ...current.fills }
+        const pinned = { ...current.pinned }
+        groups.forEach((group, index) => {
+          if (index >= colors.length) return
+          for (const id of group.ids) {
+            fills[id] = colors[index]
+            pinned[id] = true
+          }
+        })
+        return { ...current, fills, pinned }
+      })
+      showToast(`Paleta pegada (${Math.min(colors.length, groups.length)} colores)`)
+    } catch {
+      setError('El navegador no permitió leer el portapapeles. Pulsa «Permitir» si lo pide.')
+    }
+  }
+
   const downloadPng = async () => {
     const svg = currentSvg()
     if (!svg) return
 
     try {
-      await exportSvgToPng(svg, fileName || 'imagen-vectorizada')
+      await exportSvgToPng(svg, fileName || 'imagen-vectorizada', { scale: pngScale, background: pngBg === 'transparent' ? '' : pngBg })
     } catch {
       setError('No se pudo exportar el PNG.')
     }
@@ -856,6 +999,59 @@ export default function App() {
                       Solo la zona pulsada
                     </button>
                   </div>
+                  <button type="button" className={`tool-btn ${multiMode ? 'primary' : ''}`} aria-pressed={multiMode} onClick={() => setMultiMode((v) => !v)} title="Equivale a mantener Ctrl al hacer clic">
+                    <span className="tool-icon">{multiMode ? '☑' : '☐'}</span>Selección múltiple
+                  </button>
+                  <button
+                    type="button"
+                    className="tool-btn"
+                    onPointerDown={() => setPeek(true)}
+                    onPointerUp={() => setPeek(false)}
+                    onPointerLeave={() => setPeek(false)}
+                    disabled={!ready}
+                    title="Mantén pulsado (o la tecla O) para ver la imagen original"
+                  >
+                    <span className="tool-icon">◐</span>Ver original (mantener)
+                  </button>
+                </div>
+
+                <div className="tool-group">
+                  <p className="tool-title">Ajuste global de color</p>
+                  {[
+                    ['h', 'Tono', -180, 180],
+                    ['s', 'Saturación', -100, 100],
+                    ['l', 'Brillo', -60, 60]
+                  ].map(([key, label, min, max]) => (
+                    <label className="tool-slider" key={key}>
+                      <span>
+                        {label} <strong>{edit.adjust?.[key] || 0}</strong>
+                      </span>
+                      <input
+                        type="range"
+                        min={min}
+                        max={max}
+                        step="1"
+                        value={edit.adjust?.[key] || 0}
+                        disabled={!ready}
+                        onPointerDown={snapshot}
+                        onChange={(e) => setEdit((current) => ({ ...current, adjust: { h: 0, s: 0, l: 0, ...current.adjust, [key]: Number(e.target.value) } }))}
+                      />
+                    </label>
+                  ))}
+                  <div className="tool-row">
+                    <button
+                      type="button"
+                      className="tool-btn"
+                      disabled={!ready || !(edit.adjust?.h || edit.adjust?.s || edit.adjust?.l)}
+                      onClick={() => {
+                        snapshot()
+                        setEdit((current) => ({ ...current, adjust: { h: 0, s: 0, l: 0 } }))
+                      }}
+                    >
+                      Restablecer
+                    </button>
+                  </div>
+                  <p className="hint">Prueba variantes de toda la imagen a la vez. Si luego editas una zona, el ajuste se fija en los colores.</p>
                 </div>
 
                 <div className="tool-group">
@@ -909,6 +1105,33 @@ export default function App() {
                   </button>
                   <button type="button" className="tool-btn" onClick={downloadPng} disabled={!ready}>
                     <span className="tool-icon">⤓</span>Exportar PNG
+                  </button>
+                  <div className="tool-row">
+                    <label className="tool-select">
+                      <span>Tamaño</span>
+                      <select value={pngScale} onChange={(e) => setPngScale(Number(e.target.value))}>
+                        <option value={1}>1× (original)</option>
+                        <option value={2}>2×</option>
+                        <option value={4}>4×</option>
+                      </select>
+                    </label>
+                    <label className="tool-select">
+                      <span>Fondo</span>
+                      <select value={pngBg} onChange={(e) => setPngBg(e.target.value)}>
+                        <option value="transparent">Transparente</option>
+                        <option value="#FFFFFF">Blanco</option>
+                        <option value="#000000">Negro</option>
+                      </select>
+                    </label>
+                  </div>
+                  <button type="button" className="tool-btn" onClick={copySvgCode} disabled={!ready}>
+                    <span className="tool-icon">⧉</span>Copiar código SVG
+                  </button>
+                  <button type="button" className="tool-btn" onClick={copyPalette} disabled={!ready}>
+                    <span className="tool-icon">⧉</span>Copiar paleta
+                  </button>
+                  <button type="button" className="tool-btn" onClick={pastePalette} disabled={!ready}>
+                    <span className="tool-icon">⎘</span>Pegar paleta
                   </button>
                 </div>
               </aside>
@@ -978,7 +1201,7 @@ export default function App() {
                         −
                       </button>
                       <span>{Math.round(zoom * 100)}%</span>
-                      <button type="button" onClick={() => setZoom((z) => Math.min(4, Math.round((z + 0.5) * 10) / 10))} disabled={zoom >= 4} aria-label="Acercar">
+                      <button type="button" onClick={() => setZoom((z) => Math.min(8, Math.round((z + 0.5) * 10) / 10))} disabled={zoom >= 8} aria-label="Acercar">
                         +
                       </button>
                       <button type="button" onClick={() => setZoom(1)} disabled={zoom === 1}>
@@ -988,7 +1211,7 @@ export default function App() {
                     <strong>{ready ? `${visibleRegions.length} zonas` : '—'}</strong>
                   </div>
 
-                  <div className={`stage-wrap ${zoom > 1 ? 'zoomed' : ''}`}>
+                  <div ref={wrapRef} className={`stage-wrap ${zoom > 1 ? 'zoomed' : ''}`}>
                     {ready ? (
                       <div
                         ref={stageRef}
@@ -1036,6 +1259,8 @@ export default function App() {
                           </g>
                         </svg>
 
+                        {peek && <img src={imageSrc} alt="Original" className="peek-img" draggable={false} />}
+
                         {selected && selectedColor && (
                           <Callout
                             selected={selected}
@@ -1046,6 +1271,15 @@ export default function App() {
                             onMode={changeMode}
                             onDelete={() => hideIds(selected.scope)}
                             onMerge={() => mergeIds(selected.scope)}
+                            onPickScreen={async () => {
+                              try {
+                                const result = await new window.EyeDropper().open()
+                                snapshot()
+                                applyColor(selected.scope, normalizeHex(result.sRGBHex))
+                              } catch {
+                                // cancelado
+                              }
+                            }}
                             onClose={() => setSelected(null)}
                           />
                         )}
