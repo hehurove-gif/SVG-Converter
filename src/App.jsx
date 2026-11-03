@@ -194,6 +194,8 @@ export default function App() {
   const [seg, setSeg] = useState(null)
   const [edit, setEdit] = useState({ fills: {}, hidden: {} })
   const [history, setHistory] = useState([])
+  const [future, setFuture] = useState([])
+  const actionsRef = useRef({})
   const [mode, setMode] = useState('group')
   const [selected, setSelected] = useState(null)
   const [hoverHex, setHoverHex] = useState(null)
@@ -230,6 +232,7 @@ export default function App() {
         setSeg(result)
         setEdit(initialEdit(result))
         setHistory([])
+        setFuture([])
         setSelected(null)
         setNotice(result.regions.length ? '' : 'No se encontraron zonas de color en la imagen.')
       } catch (err) {
@@ -248,6 +251,20 @@ export default function App() {
   useEffect(() => {
     const onKey = (event) => {
       if (event.key === 'Escape') setSelected(null)
+
+      // Ctrl/Cmd+Z deshace, Ctrl/Cmd+Y (o Ctrl/Cmd+Shift+Z) rehace. En campos de texto se deja el atajo nativo.
+      const target = event.target
+      const typing = target instanceof HTMLElement && (target.isContentEditable || target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && !target.classList.contains('hex-input') && !['range', 'color', 'checkbox', 'file'].includes(target.type)))
+      if (typing || !(event.ctrlKey || event.metaKey) || event.altKey) return
+
+      const key = event.key.toLowerCase()
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault()
+        actionsRef.current.undo?.()
+      } else if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault()
+        actionsRef.current.redo?.()
+      }
     }
     const onResize = () => setSelected(null)
     window.addEventListener('keydown', onKey)
@@ -293,12 +310,14 @@ export default function App() {
   const hiddenCount = Object.keys(edit.hidden).length
   const selectedColor = selected ? edit.fills[selected.id] : null
 
-  const snapshot = () =>
+  const snapshot = () => {
+    setFuture([])
     setHistory((current) => {
       const last = current[current.length - 1]
       if (last && JSON.stringify(last) === JSON.stringify(edit)) return current
       return [...current.slice(-40), edit]
     })
+  }
 
   const undo = () => {
     const now = JSON.stringify(edit)
@@ -310,10 +329,22 @@ export default function App() {
       return
     }
 
+    setFuture((current) => [...current, edit])
     setEdit(history[index])
     setHistory(history.slice(0, index))
     setSelected(null)
   }
+
+  const redo = () => {
+    if (!future.length) return
+    const next = future[future.length - 1]
+    setFuture(future.slice(0, -1))
+    setHistory((current) => [...current.slice(-40), edit])
+    setEdit(next)
+    setSelected(null)
+  }
+
+  actionsRef.current = { undo, redo }
 
   const resetAll = () => {
     if (!seg) return
@@ -414,6 +445,7 @@ export default function App() {
       setSeg(null)
       setEdit({ fills: {}, hidden: {} })
       setHistory([])
+      setFuture([])
       setSelected(null)
       setNotice('')
       setFileName(file.name.replace(/\.[^/.]+$/, ''))
@@ -553,8 +585,11 @@ export default function App() {
                   <button type="button" className="tool-btn" onClick={removeBackground} disabled={!ready || busy}>
                     <span className="tool-icon">◌</span>Eliminar fondo
                   </button>
-                  <button type="button" className="tool-btn" onClick={undo} disabled={!history.length}>
+                  <button type="button" className="tool-btn" onClick={undo} disabled={!history.length} title="Deshacer (Ctrl + Z)">
                     <span className="tool-icon">↶</span>Deshacer
+                  </button>
+                  <button type="button" className="tool-btn" onClick={redo} disabled={!future.length} title="Rehacer (Ctrl + Y)">
+                    <span className="tool-icon">↷</span>Rehacer
                   </button>
                   <button type="button" className="tool-btn" onClick={resetAll} disabled={!ready}>
                     <span className="tool-icon">⟲</span>Restaurar todo
