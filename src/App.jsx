@@ -1060,90 +1060,6 @@ export default function App() {
                 </div>
 
                 <div className="tool-group">
-                  <p className="tool-title">Edición</p>
-                  <button type="button" className="tool-btn" onClick={removeBackground} disabled={!ready || busy}>
-                    <span className="tool-icon">◌</span>Eliminar fondo
-                  </button>
-                  <button type="button" className="tool-btn" onClick={findGradients} disabled={!ready || busy} title="Une las bandas de color contiguas que forman un degradado en una sola zona con degradado real">
-                    <span className="tool-icon">▤</span>Detectar degradados
-                  </button>
-                  <button type="button" className="tool-btn" onClick={undo} disabled={!history.length} title="Deshacer (Ctrl + Z)">
-                    <span className="tool-icon">↶</span>Deshacer
-                  </button>
-                  <button type="button" className="tool-btn" onClick={redo} disabled={!future.length} title="Rehacer (Ctrl + Y)">
-                    <span className="tool-icon">↷</span>Rehacer
-                  </button>
-                  <button type="button" className="tool-btn" onClick={resetAll} disabled={!ready}>
-                    <span className="tool-icon">⟲</span>Restaurar todo
-                  </button>
-                </div>
-
-                <div className="tool-group">
-                  <p className="tool-title">Al cambiar un color</p>
-                  <div className="segmented stacked" role="group" aria-label="Alcance del cambio de color">
-                    <button type="button" className={mode === 'group' ? 'on' : ''} onClick={() => changeMode('group')}>
-                      Todas las zonas del mismo color
-                    </button>
-                    <button type="button" className={mode === 'region' ? 'on' : ''} onClick={() => changeMode('region')}>
-                      Solo la zona pulsada
-                    </button>
-                  </div>
-                  <button type="button" className={`tool-btn ${multiMode ? 'primary' : ''}`} aria-pressed={multiMode} onClick={() => setMultiMode((v) => !v)} title="Equivale a mantener Ctrl al hacer clic">
-                    <span className="tool-icon">{multiMode ? '☑' : '☐'}</span>Selección múltiple
-                  </button>
-                  <button
-                    type="button"
-                    className="tool-btn"
-                    onPointerDown={() => setPeek(true)}
-                    onPointerUp={() => setPeek(false)}
-                    onPointerLeave={() => setPeek(false)}
-                    disabled={!ready}
-                    title="Mantén pulsado (o la tecla O) para ver la imagen original"
-                  >
-                    <span className="tool-icon">◐</span>Ver original (mantener)
-                  </button>
-                </div>
-
-                <div className="tool-group">
-                  <p className="tool-title">Ajuste global de color</p>
-                  {[
-                    ['h', 'Tono', -180, 180],
-                    ['s', 'Saturación', -100, 100],
-                    ['l', 'Brillo', -60, 60]
-                  ].map(([key, label, min, max]) => (
-                    <label className="tool-slider" key={key}>
-                      <span>
-                        {label} <strong>{edit.adjust?.[key] || 0}</strong>
-                      </span>
-                      <input
-                        type="range"
-                        min={min}
-                        max={max}
-                        step="1"
-                        value={edit.adjust?.[key] || 0}
-                        disabled={!ready}
-                        onPointerDown={snapshot}
-                        onChange={(e) => setEdit((current) => ({ ...current, adjust: { h: 0, s: 0, l: 0, ...current.adjust, [key]: Number(e.target.value) } }))}
-                      />
-                    </label>
-                  ))}
-                  <div className="tool-row">
-                    <button
-                      type="button"
-                      className="tool-btn"
-                      disabled={!ready || !(edit.adjust?.h || edit.adjust?.s || edit.adjust?.l)}
-                      onClick={() => {
-                        snapshot()
-                        setEdit((current) => ({ ...current, adjust: { h: 0, s: 0, l: 0 } }))
-                      }}
-                    >
-                      Restablecer
-                    </button>
-                  </div>
-                  <p className="hint">Prueba variantes de toda la imagen a la vez. Si luego editas una zona, el ajuste se fija en los colores.</p>
-                </div>
-
-                <div className="tool-group">
                   <p className="tool-title">Ajustes</p>
                   <label className="tool-slider">
                     <span>
@@ -1208,6 +1124,36 @@ export default function App() {
                 </div>
 
                 <div className="tool-group">
+                  <p className="tool-title">Edición</p>
+                  <button type="button" className="tool-btn" onClick={removeBackground} disabled={!ready || busy}>
+                    <span className="tool-icon">◌</span>Eliminar fondo
+                  </button>
+                  <button type="button" className="tool-btn" onClick={findGradients} disabled={!ready || busy} title="Une las bandas de color contiguas que forman un degradado en una sola zona con degradado real">
+                    <span className="tool-icon">▤</span>Detectar degradados
+                  </button>
+                  <button type="button" className="tool-btn" onClick={undo} disabled={!history.length} title="Deshacer (Ctrl + Z)">
+                    <span className="tool-icon">↶</span>Deshacer
+                  </button>
+                  <button type="button" className="tool-btn" onClick={redo} disabled={!future.length} title="Rehacer (Ctrl + Y)">
+                    <span className="tool-icon">↷</span>Rehacer
+                  </button>
+                  <button type="button" className="tool-btn" onClick={resetAll} disabled={!ready}>
+                    <span className="tool-icon">⟲</span>Restaurar todo
+                  </button>
+                  <button
+                    type="button"
+                    className="tool-btn"
+                    onPointerDown={() => setPeek(true)}
+                    onPointerUp={() => setPeek(false)}
+                    onPointerLeave={() => setPeek(false)}
+                    disabled={!ready}
+                    title="Mantén pulsado (o la tecla O) para ver la imagen original"
+                  >
+                    <span className="tool-icon">◐</span>Ver original (mantener)
+                  </button>
+                </div>
+
+                <div className="tool-group">
                   <p className="tool-title">Exportar</p>
                   <button type="button" className="tool-btn success" onClick={downloadSvg} disabled={!ready}>
                     <span className="tool-icon">⤓</span>Descargar SVG
@@ -1235,12 +1181,6 @@ export default function App() {
                   </div>
                   <button type="button" className="tool-btn" onClick={copySvgCode} disabled={!ready}>
                     <span className="tool-icon">⧉</span>Copiar código SVG
-                  </button>
-                  <button type="button" className="tool-btn" onClick={copyPalette} disabled={!ready}>
-                    <span className="tool-icon">⧉</span>Copiar paleta
-                  </button>
-                  <button type="button" className="tool-btn" onClick={pastePalette} disabled={!ready}>
-                    <span className="tool-icon">⎘</span>Pegar paleta
                   </button>
                 </div>
               </aside>
@@ -1425,6 +1365,62 @@ export default function App() {
                   <img src={imageSrc} alt="Imagen original" className="original-image" />
                 </div>
 
+                <div className="editor-card color-tools">
+                <div className="tool-group">
+                  <p className="tool-title">Al cambiar un color</p>
+                  <div className="segmented stacked" role="group" aria-label="Alcance del cambio de color">
+                    <button type="button" className={mode === 'group' ? 'on' : ''} onClick={() => changeMode('group')}>
+                      Todas las zonas del mismo color
+                    </button>
+                    <button type="button" className={mode === 'region' ? 'on' : ''} onClick={() => changeMode('region')}>
+                      Solo la zona pulsada
+                    </button>
+                  </div>
+                  <button type="button" className={`tool-btn ${multiMode ? 'primary' : ''}`} aria-pressed={multiMode} onClick={() => setMultiMode((v) => !v)} title="Equivale a mantener Ctrl al hacer clic">
+                    <span className="tool-icon">{multiMode ? '☑' : '☐'}</span>Selección múltiple
+                  </button>
+                </div>
+
+                <div className="tool-group">
+                  <p className="tool-title">Ajuste global de color</p>
+                  {[
+                    ['h', 'Tono', -180, 180],
+                    ['s', 'Saturación', -100, 100],
+                    ['l', 'Brillo', -60, 60]
+                  ].map(([key, label, min, max]) => (
+                    <label className="tool-slider" key={key}>
+                      <span>
+                        {label} <strong>{edit.adjust?.[key] || 0}</strong>
+                      </span>
+                      <input
+                        type="range"
+                        min={min}
+                        max={max}
+                        step="1"
+                        value={edit.adjust?.[key] || 0}
+                        disabled={!ready}
+                        onPointerDown={snapshot}
+                        onChange={(e) => setEdit((current) => ({ ...current, adjust: { h: 0, s: 0, l: 0, ...current.adjust, [key]: Number(e.target.value) } }))}
+                      />
+                    </label>
+                  ))}
+                  <div className="tool-row">
+                    <button
+                      type="button"
+                      className="tool-btn"
+                      disabled={!ready || !(edit.adjust?.h || edit.adjust?.s || edit.adjust?.l)}
+                      onClick={() => {
+                        snapshot()
+                        setEdit((current) => ({ ...current, adjust: { h: 0, s: 0, l: 0 } }))
+                      }}
+                    >
+                      Restablecer
+                    </button>
+                  </div>
+                  <p className="hint">Prueba variantes de toda la imagen a la vez. Si luego editas una zona, el ajuste se fija en los colores.</p>
+                </div>
+                </div>
+
                 <aside className="editor-card palette-card">
                   <div className="preview-label-row">
                     <span>Colores actuales</span>
@@ -1473,6 +1469,15 @@ export default function App() {
                             {key}
                           </button>
                         ))}
+                      </div>
+
+                      <div className="palette-actions">
+                    <button type="button" className="tool-btn" onClick={copyPalette} disabled={!ready}>
+                      <span className="tool-icon">⧉</span>Copiar paleta
+                    </button>
+                    <button type="button" className="tool-btn" onClick={pastePalette} disabled={!ready}>
+                      <span className="tool-icon">⎘</span>Pegar paleta
+                    </button>
                       </div>
 
                       {hiddenCount > 0 && (

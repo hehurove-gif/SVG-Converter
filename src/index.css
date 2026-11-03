@@ -1209,3 +1209,10 @@ h2 {
   .kbd-hint { display: none; }
   .preview-label-row { flex-wrap: wrap; gap: 0.5rem; }
 }
+
+.color-tools { display: flex; flex-direction: column; gap: 0.9rem; }
+.palette-actions { display: flex; flex-direction: column; gap: 0.45rem; margin-top: 0.7rem; }
+.side-column .tool-btn { width: 100%; }
+
+/* Las columnas son más altas que la pantalla: sin "sticky" para poder llegar a todos los botones. */
+.tools { position: static; }
