@@ -1168,3 +1168,6 @@ h2 {
 .guide strong { color: #e2e8f0; }
 
 .notice-link { display: inline; margin-left: 0.6rem; padding: 0; border: 0; background: none; color: #67e8f9; text-decoration: underline; cursor: pointer; font: inherit; font-weight: 600; }
+
+.toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); z-index: 50; padding: 0.55rem 0.95rem; border-radius: 999px; background: rgba(15, 23, 42, 0.95); border: 1px solid rgba(34, 211, 238, 0.4); color: #e0f2fe; font-size: 0.82rem; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4); }
+.callout-multi { margin: 0.5rem 0 0; font-size: 0.7rem; line-height: 1.35; color: #94a3b8; }

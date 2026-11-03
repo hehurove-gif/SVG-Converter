@@ -140,6 +140,7 @@ function HexInput({ value, onCommit }) {
 
 // Globo con flecha que apunta al lugar exacto donde se hizo clic.
 function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onClose }) {
+  const picks = selected.picked?.length || 1
   const { x, y, w } = selected
   const left = clamp(x - CALLOUT_WIDTH / 2, 6, Math.max(6, w - CALLOUT_WIDTH - 6))
   const arrowX = clamp(x - left, 20, CALLOUT_WIDTH - 20)
@@ -170,6 +171,7 @@ function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onCl
         </div>
 
         <HexInput value={color} onCommit={onColor} />
+        {picks > 1 && <p className="callout-multi">{picks} zonas elegidas: el color se aplica a todas. Ctrl + clic para añadir o quitar.</p>}
 
         <div className="segmented small" role="group" aria-label="Alcance del cambio">
           <button type="button" className={mode === 'group' ? 'on' : ''} onClick={() => onMode('group')}>
@@ -181,7 +183,7 @@ function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onCl
         </div>
 
         <button type="button" className="callout-delete" onClick={onDelete}>
-          Eliminar {mode === 'group' && count > 1 ? `estas ${count} zonas` : 'esta zona'}
+          Eliminar {count > 1 ? `estas ${count} zonas` : 'esta zona'}
         </button>
       </div>
     </>
@@ -235,6 +237,9 @@ export default function App() {
   const actionsRef = useRef({})
   const liveRef = useRef({ seg: null, edit: null })
   const [backup, setBackup] = useState(null)
+  const [toast, setToast] = useState('')
+  const clipRef = useRef('')
+  const toastTimer = useRef(null)
   const [mode, setMode] = useState('group')
   const [selected, setSelected] = useState(null)
   const [hoverHex, setHoverHex] = useState(null)
@@ -320,11 +325,31 @@ export default function App() {
       }
     }
     const onResize = () => setSelected(null)
+    const isTyping = (target) =>
+      target instanceof HTMLElement && (target.isContentEditable || target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && !['range', 'color', 'checkbox', 'file'].includes(target.type)))
+
+    // Ctrl + C copia el color de la zona elegida; Ctrl + V lo pega en la(s) zona(s) seleccionada(s).
+    const onCopy = (event) => {
+      if (isTyping(event.target) || String(window.getSelection?.() || '')) return
+      const hex = actionsRef.current.copyColor?.()
+      if (hex) {
+        event.clipboardData?.setData('text/plain', hex)
+        event.preventDefault()
+      }
+    }
+    const onPaste = (event) => {
+      if (isTyping(event.target)) return
+      if (actionsRef.current.pasteColor?.(event.clipboardData?.getData('text'))) event.preventDefault()
+    }
     window.addEventListener('keydown', onKey)
     window.addEventListener('resize', onResize)
+    document.addEventListener('copy', onCopy)
+    document.addEventListener('paste', onPaste)
     return () => {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('resize', onResize)
+      document.removeEventListener('copy', onCopy)
+      document.removeEventListener('paste', onPaste)
     }
   }, [])
 
@@ -398,7 +423,27 @@ export default function App() {
     setSelected(null)
   }
 
-  actionsRef.current = { undo, redo }
+  const copyColor = () => {
+    if (!selected) return null
+    const hex = edit.fills[selected.id]
+    if (!hex) return null
+    clipRef.current = hex
+    showToast(`Color ${hex} copiado`)
+    return hex
+  }
+
+  const pasteColor = (text) => {
+    if (!selected) return false
+    const typed = /^#?[0-9a-fA-F]{6}$/.test((text || '').trim()) ? normalizeHex((text || '').trim().replace(/^#?/, '#')) : ''
+    const hex = typed || clipRef.current
+    if (!hex) return false
+    snapshot()
+    applyColor(selected.scope, hex)
+    showToast(`Color ${hex} pegado en ${selected.scope.length} ${selected.scope.length === 1 ? 'zona' : 'zonas'}`)
+    return true
+  }
+
+  actionsRef.current = { undo, redo, copyColor, pasteColor }
 
   const resetAll = () => {
     if (!seg) return
@@ -409,10 +454,17 @@ export default function App() {
     setSelectedPreset('')
   }
 
-  const computeScope = (id, nextMode) => {
-    if (nextMode === 'region' || !seg) return [id]
-    const hex = edit.fills[id]
-    return seg.regions.filter((r) => !edit.hidden[r.id] && edit.fills[r.id] === hex).map((r) => r.id)
+  const computeScope = (ids, nextMode) => {
+    const list = Array.isArray(ids) ? ids : [ids]
+    if (nextMode === 'region' || !seg) return list
+    const colors = new Set(list.map((id) => edit.fills[id]))
+    return seg.regions.filter((r) => !edit.hidden[r.id] && (list.includes(r.id) || colors.has(edit.fills[r.id]))).map((r) => r.id)
+  }
+
+  const showToast = (text) => {
+    setToast(text)
+    clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(''), 2200)
   }
 
   const selectRegion = (region, event) => {
@@ -421,18 +473,39 @@ export default function App() {
     if (!rect) return
 
     snapshot()
+
+    // Ctrl/Cmd + clic: añade o quita zonas de la selección para cambiarles el color juntas.
+    if ((event.ctrlKey || event.metaKey) && selected) {
+      const current = selected.picked || [selected.id]
+      const picked = current.includes(region.id) ? current.filter((id) => id !== region.id) : [...current, region.id]
+      if (!picked.length) {
+        setSelected(null)
+        return
+      }
+      setSelected({
+        id: picked[picked.length - 1],
+        picked,
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+        w: rect.width,
+        scope: computeScope(picked, mode)
+      })
+      return
+    }
+
     setSelected({
       id: region.id,
+      picked: [region.id],
       x: event.clientX - rect.left,
       y: event.clientY - rect.top,
       w: rect.width,
-      scope: computeScope(region.id, mode)
+      scope: computeScope([region.id], mode)
     })
   }
 
   const changeMode = (nextMode) => {
     setMode(nextMode)
-    setSelected((current) => (current ? { ...current, scope: computeScope(current.id, nextMode) } : current))
+    setSelected((current) => (current ? { ...current, scope: computeScope(current.picked || [current.id], nextMode) } : current))
   }
 
   const applyColor = (ids, hex) => {
@@ -743,6 +816,11 @@ export default function App() {
                     )}
                   </div>
                 )}
+                {toast && (
+                  <div className="toast" role="status">
+                    {toast}
+                  </div>
+                )}
                 {advice && !busy && (
                   <div className="advice-box" role="status">
                     <div>
@@ -771,7 +849,7 @@ export default function App() {
 
                 <div className="editor-card vector-card">
                   <div className="preview-label-row">
-                    <span>Vector · haz clic en una zona</span>
+                    <span>Vector · clic en una zona · Ctrl + clic para elegir varias · Ctrl + C / V copia y pega el color</span>
                     <div className="zoom-controls">
                       <button type="button" onClick={() => setZoom((z) => Math.max(1, Math.round((z - 0.5) * 10) / 10))} disabled={zoom <= 1} aria-label="Alejar">
                         −
