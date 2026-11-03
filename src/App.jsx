@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { clamp, hexToRgb, isValidHex, normalizeHex } from './lib/color.js'
+import { clamp, hexToRgb, isValidHex, mixHex, normalizeHex } from './lib/color.js'
 import { analyzeImage, buildSvg, detectBackground, gradientDef, loadImage, segmentImage } from './lib/segment.js'
 import { bake, initialEdit, isFollower, resolveView } from './lib/view.js'
 import { clearWork, loadWork, saveWork } from './lib/store.js'
@@ -145,7 +145,7 @@ function HexInput({ value, onCommit }) {
 }
 
 // Globo con flecha que apunta al lugar exacto donde se hizo clic.
-function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onMerge, onClose, onPickScreen }) {
+function Callout({ selected, color, count, mode, grad, onGrad, onGradStart, onColor, onMode, onDelete, onMerge, onClose, onPickScreen }) {
   const picks = selected.picked?.length || 1
   const { x, y, w } = selected
   const left = clamp(x - CALLOUT_WIDTH / 2, 6, Math.max(6, w - CALLOUT_WIDTH - 6))
@@ -194,6 +194,23 @@ function Callout({ selected, color, count, mode, onColor, onMode, onDelete, onMe
             Solo esta zona
           </button>
         </div>
+
+        <label className="callout-grad-toggle">
+          <input type="checkbox" checked={Boolean(grad)} onChange={(event) => onGrad(event.target.checked ? { to: mixHex(color, '#FFFFFF', 0.45), angle: 90 } : null)} />
+          Degradado
+        </label>
+        {grad && (
+          <div className="callout-grad">
+            <label className="callout-grad-end" title="Segundo color del degradado">
+              <span style={{ backgroundColor: grad.to }} />
+              <input type="color" value={grad.to} onChange={(event) => onGrad({ ...grad, to: normalizeHex(event.target.value) })} />
+            </label>
+            <label className="callout-grad-angle">
+              Dirección {grad.angle}°
+              <input type="range" min="0" max="345" step="15" value={grad.angle} onPointerDown={onGradStart} onChange={(event) => onGrad({ ...grad, angle: Number(event.target.value) })} />
+            </label>
+          </div>
+        )}
 
         <button type="button" className="callout-merge" onClick={onMerge} title="Atajo: M">
           Fusionar con la vecina
@@ -675,6 +692,18 @@ export default function App() {
   const changeMode = (nextMode) => {
     setMode(nextMode)
     setSelected((current) => (current ? { ...current, scope: computeScope(current.picked || [current.id], nextMode) } : current))
+  }
+
+  const setGradient = (ids, g) => {
+    setEdit((raw) => {
+      const current = bake(raw)
+      const grads = { ...current.grads }
+      for (const id of ids) {
+        if (g) grads[id] = { to: g.to, angle: g.angle }
+        else delete grads[id]
+      }
+      return { ...current, grads }
+    })
   }
 
   const applyColor = (ids, hex) => {
@@ -1267,6 +1296,12 @@ export default function App() {
                             color={selectedColor}
                             count={selected.scope.length}
                             mode={mode}
+                            grad={edit.grads?.[selected.id] || null}
+                            onGradStart={snapshot}
+                            onGrad={(g) => {
+                              if (!g || !edit.grads?.[selected.id]) snapshot()
+                              setGradient(selected.scope, g)
+                            }}
                             onColor={(hex) => applyColor(selected.scope, hex)}
                             onMode={changeMode}
                             onDelete={() => hideIds(selected.scope)}
