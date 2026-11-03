@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { clamp, hexToRgb, isValidHex, mixHex, normalizeHex } from './lib/color.js'
 import { analyzeImage, buildSvg, detectBackground, gradientDef, loadImage } from './lib/segment.js'
 import { vectorize } from './lib/vectorize.js'
+import { detectGradients } from './lib/gradients.js'
 import { bake, initialEdit, isFollower, resolveView } from './lib/view.js'
 import { clearWork, loadWork, saveWork } from './lib/store.js'
 
@@ -48,7 +49,7 @@ function carryEdits(oldSeg, oldEdit, newSeg) {
   if (!oldSeg?.regionMap || oldSeg.width !== newSeg.width || oldSeg.height !== newSeg.height) return { edit: next, kept: 0, total: 0 }
 
   const base = initialEdit(oldSeg)
-  const changedOld = oldSeg.regions.filter((r) => oldEdit.hidden[r.id] || oldEdit.fills[r.id] !== base.fills[r.id]).length
+  const changedOld = oldSeg.regions.filter((r) => oldEdit.hidden[r.id] || oldEdit.fills[r.id] !== base.fills[r.id] || oldEdit.grads?.[r.id]).length
   let kept = 0
 
   for (const region of newSeg.regions) {
@@ -67,6 +68,28 @@ function carryEdits(oldSeg, oldEdit, newSeg) {
         best = key
         bestVotes = count
       }
+    }
+
+    // Degradado manual: lo hereda la zona nueva que ocupa la mayor parte de la zona anterior con degradado.
+    const oldVotes = new Map()
+    for (const p of region.samples) {
+      const oldId = oldSeg.regionMap[p]
+      if (oldId >= 0) oldVotes.set(oldId, (oldVotes.get(oldId) || 0) + 1)
+    }
+    let topOld = -1
+    let topCount = 0
+    for (const [oldId, count] of oldVotes) {
+      if (count > topCount) {
+        topOld = oldId
+        topCount = count
+      }
+    }
+    const oldGrad = topOld >= 0 && topCount > region.samples.length / 2 ? oldEdit.grads?.[topOld] : null
+    if (oldGrad && !oldEdit.joins?.[topOld]) {
+      next.grads[region.id] = { ...oldGrad }
+      next.fills[region.id] = oldEdit.fills[topOld]
+      kept += 1
+      continue
     }
 
     if (best === 'same' || bestVotes <= region.samples.length / 2) continue
@@ -185,7 +208,7 @@ function Callout({ selected, color, count, mode, grad, onGrad, onGradStart, onCo
             </button>
           )}
         </div>
-        {picks > 1 && <p className="callout-multi">{picks} zonas elegidas: el color se aplica a todas. Ctrl + clic para añadir o quitar.</p>}
+        {picks > 1 && <p className="callout-multi">{picks} zonas elegidas: el color se aplica a todas. Pulsa otra zona (con «Varias» o Ctrl) para añadir o quitar.</p>}
 
         <div className="segmented small" role="group" aria-label="Alcance del cambio">
           <button type="button" className={mode === 'group' ? 'on' : ''} onClick={() => onMode('group')}>
@@ -266,7 +289,7 @@ export default function App() {
   const paramsRef = useRef(params)
   paramsRef.current = params
   const [seg, setSeg] = useState(null)
-  const [edit, setEdit] = useState({ fills: {}, hidden: {}, pinned: {}, grads: {}, adjust: { h: 0, s: 0, l: 0 } })
+  const [edit, setEdit] = useState({ fills: {}, hidden: {}, pinned: {}, grads: {}, joins: {}, adjust: { h: 0, s: 0, l: 0 } })
   const [history, setHistory] = useState([])
   const [future, setFuture] = useState([])
   const actionsRef = useRef({})
@@ -527,7 +550,7 @@ export default function App() {
     wrap.scrollTop += rect.top + anchor.ry * rect.height - (wrapRect.top + anchor.my)
   }, [zoom])
 
-  const view = useMemo(() => (seg ? resolveView(seg, edit) : { fills: {}, hidden: {}, grads: {} }), [seg, edit])
+  const view = useMemo(() => (seg ? resolveView(seg, edit) : { fills: {}, hidden: {}, grads: {}, extra: {} }), [seg, edit])
   const visibleRegions = useMemo(() => (seg ? seg.regions.filter((r) => !view.hidden[r.id]) : []), [seg, view])
 
   // Colores actuales agrupados: todas las zonas con exactamente el mismo color.
@@ -701,12 +724,42 @@ export default function App() {
     setEdit((raw) => {
       const current = bake(raw)
       const grads = { ...current.grads }
+      const joins = { ...current.joins }
       for (const id of ids) {
         if (g) grads[id] = { to: g.to, angle: g.angle }
-        else delete grads[id]
+        else {
+          delete grads[id]
+          delete joins[id]
+        }
       }
-      return { ...current, grads }
+      return { ...current, grads, joins }
     })
+  }
+
+  const findGradients = () => {
+    if (!seg) return
+    const found = detectGradients(seg, view, isFollower, edit)
+    if (!found.length) {
+      showToast('No encontré zonas que formen un degradado. Las fotos con 20 colores o más suelen tener más.')
+      return
+    }
+    snapshot()
+    setEdit((raw) => {
+      const current = bake(raw)
+      const fills = { ...current.fills }
+      const grads = { ...current.grads }
+      const joins = { ...current.joins }
+      const pinned = { ...current.pinned }
+      for (const g of found) {
+        fills[g.head] = g.from
+        pinned[g.head] = true
+        grads[g.head] = { to: g.to, angle: g.angle }
+        joins[g.head] = g.members
+      }
+      return { ...current, fills, grads, joins, pinned }
+    })
+    setSelected(null)
+    showToast(`${found.length} ${found.length === 1 ? 'degradado detectado' : 'degradados detectados'}. Pulsa uno para ajustarlo o quitarlo.`)
   }
 
   const applyColor = (ids, hex) => {
@@ -806,7 +859,7 @@ export default function App() {
     const reader = new FileReader()
     reader.onload = () => {
       setSeg(null)
-      setEdit({ fills: {}, hidden: {}, pinned: {}, grads: {}, adjust: { h: 0, s: 0, l: 0 } })
+      setEdit({ fills: {}, hidden: {}, pinned: {}, grads: {}, joins: {}, adjust: { h: 0, s: 0, l: 0 } })
       setHistory([])
       setFuture([])
       setSelected(null)
@@ -830,7 +883,7 @@ export default function App() {
     loadFile(event.dataTransfer?.files?.[0])
   }
 
-  const currentSvg = () => (seg ? buildSvg(seg, view.fills, view.hidden, imageSize, view.grads) : '')
+  const currentSvg = () => (seg ? buildSvg(seg, view.fills, view.hidden, imageSize, view.grads, view.extra) : '')
 
   const downloadSvg = () => {
     const svg = currentSvg()
@@ -1010,6 +1063,9 @@ export default function App() {
                   <p className="tool-title">Edición</p>
                   <button type="button" className="tool-btn" onClick={removeBackground} disabled={!ready || busy}>
                     <span className="tool-icon">◌</span>Eliminar fondo
+                  </button>
+                  <button type="button" className="tool-btn" onClick={findGradients} disabled={!ready || busy} title="Une las bandas de color contiguas que forman un degradado en una sola zona con degradado real">
+                    <span className="tool-icon">▤</span>Detectar degradados
                   </button>
                   <button type="button" className="tool-btn" onClick={undo} disabled={!history.length} title="Deshacer (Ctrl + Z)">
                     <span className="tool-icon">↶</span>Deshacer
@@ -1248,7 +1304,12 @@ export default function App() {
 
                 <div className="editor-card vector-card">
                   <div className="preview-label-row">
-                    <span>Vector · clic en una zona · Ctrl + clic para elegir varias · Ctrl + C / V copia y pega el color</span>
+                    <span className="stage-title">
+                      Vector · clic en una zona<span className="kbd-hint"> · Ctrl + clic para elegir varias · Ctrl + C / V copia y pega el color</span>
+                    </span>
+                    <button type="button" className={`multi-chip ${multiMode ? 'on' : ''}`} aria-pressed={multiMode} onClick={() => setMultiMode((v) => !v)} title="Elegir varias zonas a la vez (como Ctrl + clic)">
+                      {multiMode ? '☑' : '☐'} Varias
+                    </button>
                     <div className="zoom-controls">
                       <button type="button" onClick={() => setZoom((z) => Math.max(1, Math.round((z - 0.5) * 10) / 10))} disabled={zoom <= 1} aria-label="Alejar">
                         −
@@ -1285,14 +1346,19 @@ export default function App() {
                           )}
                           <g fillRule="evenodd" strokeWidth="0.6" strokeLinejoin="round">
                             {visibleRegions.map((region) => (
-                              <path
-                                key={region.id}
-                                d={region.path}
-                                fill={view.grads[region.id] ? `url(#zg${region.id})` : view.fills[region.id]}
-                                stroke={view.grads[region.id] ? `url(#zg${region.id})` : view.fills[region.id]}
-                                className="zone"
-                                onClick={(event) => selectRegion(region, event)}
-                              />
+                              <g key={region.id}>
+                                {[region.path, ...(view.extra[region.id] || [])].map((d, index) => (
+                                  <path
+                                    key={index}
+                                    d={d}
+                                    fill={view.grads[region.id] ? `url(#zg${region.id})` : view.fills[region.id]}
+                                    stroke={view.grads[region.id] ? `url(#zg${region.id})` : view.fills[region.id]}
+                                    strokeWidth={view.extra[region.id] ? 1.6 : undefined}
+                                    className="zone"
+                                    onClick={(event) => selectRegion(region, event)}
+                                  />
+                                ))}
+                              </g>
                             ))}
                           </g>
                           <g fill="none" pointerEvents="none">
@@ -1301,8 +1367,8 @@ export default function App() {
                               .map((region) => (
                                 <path
                                   key={region.id}
-                                  d={region.path}
-                                  fillRule="evenodd"
+                                  d={region.path + (view.extra[region.id] || []).join('')}
+                                  fillRule="nonzero"
                                   stroke="#22d3ee"
                                   strokeWidth="2"
                                   strokeLinejoin="round"

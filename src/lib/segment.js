@@ -1480,6 +1480,17 @@ export function detectBackground(seg) {
 // Definición SVG de un degradado lineal por zona (ángulo en grados, sobre la caja de la zona).
 export function gradientDef(id, g) {
   const rad = (g.angle * Math.PI) / 180
+  if (g.box) {
+    // Zonas unidas: el degradado se reparte sobre la caja de todo el conjunto.
+    const [x0, y0, x1, y1] = g.box
+    const w = x1 - x0
+    const h = y1 - y0
+    const half = (Math.abs(Math.cos(rad)) * w + Math.abs(Math.sin(rad)) * h) / 2
+    const cx = x0 + w / 2
+    const cy = y0 + h / 2
+    const p = (v) => v.toFixed(2)
+    return `<linearGradient id="g${id}" gradientUnits="userSpaceOnUse" x1="${p(cx - Math.cos(rad) * half)}" y1="${p(cy - Math.sin(rad) * half)}" x2="${p(cx + Math.cos(rad) * half)}" y2="${p(cy + Math.sin(rad) * half)}"><stop offset="0" stop-color="${g.from}"/><stop offset="1" stop-color="${g.to}"/></linearGradient>`
+  }
   const dx = Math.cos(rad) / 2
   const dy = Math.sin(rad) / 2
   const f = (v) => (0.5 + v).toFixed(3)
@@ -1488,7 +1499,7 @@ export function gradientDef(id, g) {
 }
 
 // Genera el archivo SVG final con los colores editados y sin las zonas eliminadas.
-export function buildSvg(seg, fills, hidden, size, grads = {}) {
+export function buildSvg(seg, fills, hidden, size, grads = {}, extra = {}) {
   const outW = size?.width || seg.width
   const outH = size?.height || seg.height
   const defs = []
@@ -1498,7 +1509,7 @@ export function buildSvg(seg, fills, hidden, size, grads = {}) {
       const fill = fills[r.id]
       if (grads[r.id]) {
         defs.push(gradientDef(r.id, grads[r.id]))
-        return `<path d="${r.path}" fill="url(#g${r.id})" stroke="url(#g${r.id})"/>`
+        return [r.path, ...(extra[r.id] || [])].map((d) => `<path d="${d}" fill="url(#g${r.id})" stroke="url(#g${r.id})"${extra[r.id] ? ' stroke-width="1.6"' : ''}/>`).join('')
       }
       return `<path d="${r.path}" fill="${fill}" stroke="${fill}"/>`
     })
