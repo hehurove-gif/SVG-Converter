@@ -13,6 +13,29 @@ const palettePresets = {
 
 const DETAIL_LABELS = ['Mínimo', 'Bajo', 'Medio', 'Alto', 'Máximo']
 const SMOOTH_LABELS = ['Sin suavizar', 'Suave', 'Más suave', 'Muy suave']
+
+// Explicación corta de lo que hace cada ajuste en su valor actual.
+const COLOR_HELP = (n) =>
+  n <= 5
+    ? 'Pocos colores: look de póster, formas grandes y simples. Ideal para logos.'
+    : n <= 14
+      ? 'Equilibrado: bueno para ilustraciones y personajes.'
+      : n <= 24
+        ? 'Muchos colores: más fiel, útil para fotos y degradados.'
+        : 'Máximos colores: lo más parecido al original, pero con muchas zonas.'
+const DETAIL_HELP = [
+  'Ignora todo lo pequeño: solo quedan las formas grandes.',
+  'Descarta manchas y detalles diminutos. SVG liviano y fácil de editar.',
+  'Conserva detalles medianos (ojos, brillos grandes).',
+  'Conserva casi todo, hasta detalles pequeños.',
+  'Conserva hasta lo más diminuto (dientes, destellos) y no limpia el ruido de la imagen.'
+]
+const SMOOTH_HELP = [
+  'Bordes exactos y algo angulosos. Para logos con esquinas rectas o cuando quieres máxima fidelidad.',
+  'Bordes casi exactos con curvas ligeras. Buen punto de partida.',
+  'Bordes redondeados y limpios. Bueno para personajes y dibujos.',
+  'Bordes muy redondos: quita irregularidades pero también esquinas y líneas finas.'
+]
 const CALLOUT_WIDTH = 252
 
 function initialEdit(seg) {
@@ -554,26 +577,39 @@ export default function App() {
                   <p className="tool-title">Ajustes</p>
                   <label className="tool-slider">
                     <span>
-                      Colores <strong>{params.colors}</strong>
+                      Cantidad de colores <strong>{params.colors}</strong>
                     </span>
                     <input type="range" min="2" max="32" step="1" value={params.colors} onChange={(e) => setParam('colors', Number(e.target.value))} />
+                    <small className="slider-help">{COLOR_HELP(params.colors)}</small>
                   </label>
                   <label className="tool-slider">
                     <span>
-                      Detalle <strong>{DETAIL_LABELS[params.detail - 1]}</strong>
+                      Detalle de formas <strong>{DETAIL_LABELS[params.detail - 1]}</strong>
                     </span>
                     <input type="range" min="1" max="5" step="1" value={params.detail} onChange={(e) => setParam('detail', Number(e.target.value))} />
+                    <small className="slider-help">{DETAIL_HELP[params.detail - 1]}</small>
                   </label>
                   <label className="tool-slider">
                     <span>
-                      Suavizado <strong>{SMOOTH_LABELS[params.smooth]}</strong>
+                      Suavizado de bordes <strong>{SMOOTH_LABELS[params.smooth]}</strong>
                     </span>
                     <input type="range" min="0" max="3" step="1" value={params.smooth} onChange={(e) => setParam('smooth', Number(e.target.value))} />
+                    <small className="slider-help">{SMOOTH_HELP[params.smooth]}</small>
                   </label>
                   <button type="button" className={`tool-btn ${pending ? 'primary' : ''}`} onClick={() => setRunId((n) => n + 1)} disabled={!pending || busy}>
                     <span className="tool-icon">{pending ? '✦' : '✓'}</span>
                     {busy ? 'Vectorizando…' : pending ? 'Aplicar ajustes' : 'Ajustes aplicados'}
                   </button>
+                  <details className="guide">
+                    <summary>¿Cuándo usar cada ajuste?</summary>
+                    <ul>
+                      <li><strong>Bajar colores</strong> si es un logo o dibujo plano, o si salen demasiadas zonas parecidas que no quieres editar una por una.</li>
+                      <li><strong>Subir colores</strong> si es una foto o tiene degradados y se ve plana o pierde tonos.</li>
+                      <li><strong>Subir detalle</strong> si se pierden ojos, dientes, brillos o líneas finas. <strong>Bajarlo</strong> si hay manchitas sueltas o quieres un SVG más liviano.</li>
+                      <li><strong>Suavizar</strong> redondea los bordes y quita el aspecto de escalones; no los hace más marcados. Para esquinas rectas o texto, déjalo en «Sin suavizar» o «Suave».</li>
+                      <li>Si algo se ve mal, cambia <strong>un ajuste a la vez</strong> y pulsa «Aplicar ajustes».</li>
+                    </ul>
+                  </details>
                   <p className="hint">
                     {pending
                       ? 'Hay ajustes sin aplicar. Al aplicarlos se vuelve a vectorizar y se pierden las ediciones.'

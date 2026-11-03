@@ -1160,3 +1160,9 @@ h2 {
 @media (max-width: 760px) {
   .advice-box { flex-direction: column; }
 }
+
+.slider-help { display: block; margin-top: 0.3rem; color: #94a3b8; font-size: 0.7rem; line-height: 1.35; font-weight: 400; }
+.guide { margin-top: 0.7rem; font-size: 0.74rem; color: #94a3b8; }
+.guide summary { cursor: pointer; color: #67e8f9; font-weight: 600; }
+.guide ul { margin: 0.5rem 0 0; padding-left: 1.05rem; display: grid; gap: 0.4rem; line-height: 1.4; }
+.guide strong { color: #e2e8f0; }
