@@ -304,6 +304,7 @@ export default function App() {
   const liveRef = useRef({ seg: null, edit: null })
   const [backup, setBackup] = useState(null)
   const [toast, setToast] = useState('')
+  const [ctrlHeld, setCtrlHeld] = useState(false)
   const [saved, setSaved] = useState(null)
   const [multiMode, setMultiMode] = useState(false)
   const [peek, setPeek] = useState(false)
@@ -433,6 +434,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (event) => {
       if (event.key === 'Escape') setSelected(null)
+      if (event.key === 'Control' || event.key === 'Meta') setCtrlHeld(true)
 
       // Ctrl/Cmd+Z deshace, Ctrl/Cmd+Y (o Ctrl/Cmd+Shift+Z) rehace. En campos de texto se deja el atajo nativo.
       const target = event.target
@@ -488,7 +490,10 @@ export default function App() {
     }
     const onKeyUp = (event) => {
       if (event.key.toLowerCase() === 'o') setPeek(false)
+      if (event.key === 'Control' || event.key === 'Meta') setCtrlHeld(false)
     }
+    const onBlur = () => setCtrlHeld(false)
+    window.addEventListener('blur', onBlur)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('keydown', onKey)
     window.addEventListener('resize', onResize)
@@ -497,6 +502,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
       window.removeEventListener('resize', onResize)
       document.removeEventListener('copy', onCopy)
       document.removeEventListener('paste', onPaste)
@@ -707,7 +713,10 @@ export default function App() {
     snapshot()
 
     // Ctrl/Cmd + clic: añade o quita zonas de la selección para cambiarles el color juntas.
-    if ((event.ctrlKey || event.metaKey || multiMode) && selected) {
+    // Siempre en edición individual: cada zona elegida cuenta por sí sola.
+    const multi = event.ctrlKey || event.metaKey || multiMode
+    if (multi && mode !== 'region') setMode('region')
+    if (multi && selected) {
       const current = selected.picked || [selected.id]
       const picked = current.includes(region.id) ? current.filter((id) => id !== region.id) : [...current, region.id]
       if (!picked.length) {
@@ -720,7 +729,7 @@ export default function App() {
         x: event.clientX - rect.left,
         y: event.clientY - rect.top,
         w: rect.width,
-        scope: computeScope(picked, mode)
+        scope: computeScope(picked, 'region')
       })
       return
     }
@@ -731,7 +740,7 @@ export default function App() {
       x: event.clientX - rect.left,
       y: event.clientY - rect.top,
       w: rect.width,
-      scope: computeScope([region.id], mode)
+      scope: computeScope([region.id], multi ? 'region' : mode)
     })
   }
 
@@ -1387,7 +1396,7 @@ export default function App() {
 
                         {peek && <img src={imageSrc} alt="Original" className="peek-img" draggable={false} />}
 
-                        {selected && selectedColor && (
+                        {selected && selectedColor && !ctrlHeld && (
                           <Callout
                             selected={selected}
                             color={selectedColor}
