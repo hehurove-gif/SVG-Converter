@@ -1,0 +1,17 @@
+{
+  // Configuración para cuando hetor.dev ya esté en tu cuenta de Cloudflare.
+  // Build command:  VITE_BASE_PATH=/tools/svg/ npm run build
+  // Deploy command: npx wrangler deploy -c wrangler.domain.jsonc
+  "name": "svg-converter",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./dist",
+    // Los archivos quedan en la raíz de dist; Cloudflare los sirve bajo /tools/svg
+    "base_path": "/tools/svg"
+  },
+  // Ruta con prioridad sobre el Custom Domain de hetor.dev (que atiende el Worker "hetor").
+  "routes": [{ "pattern": "hetor.dev/tools/svg*", "zone_name": "hetor.dev" }],
+  "observability": {
+    "logs": { "enabled": true, "invocation_logs": true, "persist": true }
+  }
+}

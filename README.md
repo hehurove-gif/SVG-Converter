@@ -40,3 +40,13 @@ El fallback de SPA se maneja con `not_found_handling: "single-page-application"`
 ## Notas
 
 Los colores se agrupan con una paleta dominante y la imagen se divide en zonas conectadas de cada color. Las imágenes con degradados o fotografías generan muchas zonas; funciona mejor con logos, íconos e ilustraciones.
+
+## Cuando `hetor.dev` esté en Cloudflare (hetor.dev/tools/svg)
+
+Hoy la app se sirve en la raíz (`wrangler.jsonc`). Para moverla a `hetor.dev/tools/svg/`:
+
+1. En Cloudflare → Worker `svg-converter` → Settings → Build: variable `VITE_BASE_PATH=/tools/svg/`
+   y Deploy command `npx wrangler deploy -c wrangler.domain.jsonc`.
+2. Lanza un nuevo despliegue. La ruta `hetor.dev/tools/svg*` tiene prioridad sobre el Worker de Hetor.
+
+Probar en local: `VITE_BASE_PATH=/tools/svg/ npm run build`.
