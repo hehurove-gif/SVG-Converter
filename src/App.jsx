@@ -104,7 +104,8 @@ function carryEdits(oldSeg, oldEdit, newSeg) {
   return { edit: next, kept, total: changedOld }
 }
 
-async function exportSvgToPng(svgString, filename, { scale = 1, background = '' } = {}) {
+// Dibuja el SVG en un canvas y devuelve el PNG como Blob.
+async function svgToPngBlob(svgString, { scale = 1, background = '' } = {}) {
   const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
   const url = URL.createObjectURL(blob)
 
@@ -131,13 +132,20 @@ async function exportSvgToPng(svgString, filename, { scale = 1, background = '' 
     }
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
 
-    const link = document.createElement('a')
-    link.href = canvas.toDataURL('image/png')
-    link.download = `${filename || 'imagen-vectorizada'}.png`
-    link.click()
+    return await new Promise((resolve, reject) => canvas.toBlob((result) => (result ? resolve(result) : reject(new Error('PNG vacío'))), 'image/png'))
   } finally {
     URL.revokeObjectURL(url)
   }
+}
+
+async function exportSvgToPng(svgString, filename, options) {
+  const png = await svgToPngBlob(svgString, options)
+  const url = URL.createObjectURL(png)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${filename || 'imagen-vectorizada'}.png`
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 function HexInput({ value, onCommit }) {
@@ -460,10 +468,22 @@ export default function App() {
       if (hex) {
         event.clipboardData?.setData('text/plain', hex)
         event.preventDefault()
+      } else if (actionsRef.current.copyImage) {
+        // Sin zona elegida, Ctrl + C copia la imagen vectorizada como PNG.
+        event.preventDefault()
+        actionsRef.current.copyImage()
       }
     }
     const onPaste = (event) => {
       if (isTyping(event.target)) return
+
+      // Una imagen en el portapapeles (captura de pantalla, imagen copiada) se importa como imagen nueva.
+      const file = [...(event.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'))
+      if (file) {
+        event.preventDefault()
+        actionsRef.current.importImage?.(file)
+        return
+      }
       if (actionsRef.current.pasteColor?.(event.clipboardData?.getData('text'))) event.preventDefault()
     }
     const onKeyUp = (event) => {
@@ -878,6 +898,47 @@ export default function App() {
     event.target.value = ''
   }
 
+  // Importar desde el portapapeles (Ctrl + V o botón).
+  const importImage = (file) => {
+    const named = file.name && file.name !== 'image.png' ? file : new File([file], 'imagen-pegada.png', { type: file.type || 'image/png' })
+    loadFile(named)
+    showToast('Imagen pegada desde el portapapeles')
+  }
+
+  const pasteImageButton = async () => {
+    try {
+      const items = await navigator.clipboard.read()
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith('image/'))
+        if (type) {
+          const blob = await item.getType(type)
+          importImage(new File([blob], 'imagen-pegada.png', { type }))
+          return
+        }
+      }
+      showToast('No hay ninguna imagen en el portapapeles.')
+    } catch {
+      setError('El navegador no permitió leer el portapapeles. Usa Ctrl + V o acepta el permiso.')
+    }
+  }
+
+  // Copiar la imagen vectorizada al portapapeles como PNG.
+  const copyImage = async () => {
+    const svg = currentSvg()
+    if (!svg) return false
+    try {
+      const png = await svgToPngBlob(svg, { scale: pngScale, background: pngBg === 'transparent' ? '' : pngBg })
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+      showToast('Imagen copiada al portapapeles')
+      return true
+    } catch {
+      setError('El navegador no permitió copiar la imagen. Descarga el PNG en su lugar.')
+      return false
+    }
+  }
+
+  actionsRef.current = { ...actionsRef.current, importImage, copyImage: seg ? copyImage : null }
+
   const handleDrop = (event) => {
     event.preventDefault()
     loadFile(event.dataTransfer?.files?.[0])
@@ -1044,7 +1105,7 @@ export default function App() {
             >
               <div className="upload-empty-state">
                 <div className="upload-icon">⤴</div>
-                <p>Arrastra una imagen aquí o haz clic para elegirla</p>
+                <p>Arrastra una imagen aquí, haz clic para elegirla o pégala con Ctrl + V</p>
                 <span>PNG, JPG, WEBP, GIF, BMP o ICO</span>
                 <span className="privacy-note">🔒 Tu imagen se procesa en tu navegador y no se sube a ningún servidor.</span>
               </div>
@@ -1056,6 +1117,9 @@ export default function App() {
                   <p className="tool-title">Imagen</p>
                   <button type="button" className="tool-btn" onClick={() => inputRef.current?.click()}>
                     <span className="tool-icon">⤴</span>Cambiar imagen
+                  </button>
+                  <button type="button" className="tool-btn" onClick={pasteImageButton} title="Pega la imagen que tengas copiada (también con Ctrl + V)">
+                    <span className="tool-icon">⎘</span>Pegar imagen (Ctrl + V)
                   </button>
                 </div>
 
@@ -1179,6 +1243,9 @@ export default function App() {
                       </select>
                     </label>
                   </div>
+                  <button type="button" className="tool-btn" onClick={copyImage} disabled={!ready} title="Copia la imagen como PNG para pegarla en otra app (Ctrl + C sin zona elegida)">
+                    <span className="tool-icon">⧉</span>Copiar imagen (PNG)
+                  </button>
                   <button type="button" className="tool-btn" onClick={copySvgCode} disabled={!ready}>
                     <span className="tool-icon">⧉</span>Copiar código SVG
                   </button>
