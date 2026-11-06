@@ -1580,6 +1580,13 @@ export default function App() {
             </article>
           ))}
         </section>
+
+        <footer className="mt-10 border-t border-white/10 pt-5 text-center text-xs text-slate-400">
+          Developed by{' '}
+          <a href="https://hetor.hehurove.workers.dev/es" className="font-semibold text-sky-300 hover:underline">
+            Hetor
+          </a>
+        </footer>
       </div>
     </div>
   )
